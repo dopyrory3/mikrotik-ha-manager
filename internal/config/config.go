@@ -1,0 +1,98 @@
+// Package config loads mtha pair definitions from the YAML pair file and
+// resolves per-router credentials from the environment or OS keychain.
+package config
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"gopkg.in/yaml.v3"
+)
+
+// RouterConfig describes one router in a pair.
+type RouterConfig struct {
+	Host        string `yaml:"host"`
+	User        string `yaml:"user"`
+	InsecureTLS bool   `yaml:"insecure_tls"`
+}
+
+// VRRPInstance is a VRRP interface the pair should track.
+type VRRPInstance struct {
+	Interface string `yaml:"interface"`
+}
+
+// SyncConfig lists which config sections are kept in sync and which paths
+// within them are exempt from comparison.
+type SyncConfig struct {
+	Sections []string `yaml:"sections"`
+	Exempt   []string `yaml:"exempt"`
+}
+
+// RuntimeConfig parameterizes the netwatch/VRRP templates deployed to both
+// routers.
+type RuntimeConfig struct {
+	NetwatchTargets  []string `yaml:"netwatch_targets"`
+	PriorityMaster   int      `yaml:"priority_master"`
+	PriorityBackup   int      `yaml:"priority_backup"`
+	PriorityDegraded int      `yaml:"priority_degraded"`
+}
+
+// Pair is one managed HA pair: two routers, the VRRP instances linking them,
+// and the sync/runtime settings that apply to both.
+type Pair struct {
+	Name    string                  `yaml:"name"`
+	Routers map[string]RouterConfig `yaml:"routers"`
+	VRRP    []VRRPInstance          `yaml:"vrrp"`
+	Sync    SyncConfig              `yaml:"sync"`
+	Runtime RuntimeConfig           `yaml:"runtime"`
+}
+
+// File is the top-level shape of the pair file.
+type File struct {
+	Pairs []Pair `yaml:"pairs"`
+}
+
+// DefaultPath returns the default pair file location, ~/.config/mtha/pairs.yaml.
+func DefaultPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	return filepath.Join(home, ".config", "mtha", "pairs.yaml"), nil
+}
+
+// Load reads and parses the pair file at path.
+func Load(path string) (*File, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read pair file %s: %w", path, err)
+	}
+
+	var f File
+	if err := yaml.Unmarshal(data, &f); err != nil {
+		return nil, fmt.Errorf("parse pair file %s: %w", path, err)
+	}
+
+	for i, p := range f.Pairs {
+		if _, ok := p.Routers["a"]; !ok {
+			return nil, fmt.Errorf("pair %q: missing router \"a\"", p.Name)
+		}
+		if _, ok := p.Routers["b"]; !ok {
+			return nil, fmt.Errorf("pair %q: missing router \"b\"", p.Name)
+		}
+		_ = i
+	}
+
+	return &f, nil
+}
+
+// Pair returns the named pair, or an error if it isn't defined.
+func (f *File) Pair(name string) (*Pair, error) {
+	for i := range f.Pairs {
+		if f.Pairs[i].Name == name {
+			return &f.Pairs[i], nil
+		}
+	}
+	return nil, fmt.Errorf("pair %q not found", name)
+}

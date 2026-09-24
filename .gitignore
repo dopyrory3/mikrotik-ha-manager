@@ -1,0 +1,4 @@
+/bin/
+/dist/
+*.rsc
+.DS_Store
