@@ -21,7 +21,7 @@ func renderDashboard(m Model) string {
 	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, panelA, "  ", panelB))
 	b.WriteString("\n\n")
 
-	verdict, checks := evaluateReadiness(m.snapshots["a"], m.snapshots["b"], m.haveA, m.haveB)
+	verdict, checks := evaluateReadiness(m.snapshots["a"], m.snapshots["b"], m.haveA, m.haveB, m.driftData, m.driftErr)
 	b.WriteString(renderVerdict(verdict, checks))
 	b.WriteString("\n\n")
 
@@ -86,7 +86,7 @@ func statusLine(m Model) string {
 	if m.writeMode {
 		mode = "write"
 	}
-	return fmt.Sprintf(" %s | %s | q: quit ", m.pair.Name, mode)
+	return fmt.Sprintf(" %s | %s | 2: drift, q: quit ", m.pair.Name, mode)
 }
 
 func renderVerdict(v Verdict, checks []Check) string {

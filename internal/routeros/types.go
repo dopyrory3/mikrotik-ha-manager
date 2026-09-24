@@ -1,6 +1,10 @@
 package routeros
 
-import "context"
+import (
+	"context"
+
+	"mtha/internal/model"
+)
 
 // SystemResource is the response of GET /rest/system/resource.
 type SystemResource struct {
@@ -70,4 +74,18 @@ func (c *Client) Netwatch(ctx context.Context) ([]NetwatchEntry, error) {
 		return nil, err
 	}
 	return ns, nil
+}
+
+// GetSection fetches a config section by its REST path (e.g.
+// "ip/firewall/filter"), as used for drift detection (project.md §5.3).
+func (c *Client) GetSection(ctx context.Context, section string) ([]model.Entry, error) {
+	var raw []map[string]any
+	if err := c.Get(ctx, "/"+section, &raw); err != nil {
+		return nil, err
+	}
+	entries := make([]model.Entry, len(raw))
+	for i, r := range raw {
+		entries[i] = model.Entry(r)
+	}
+	return entries, nil
 }

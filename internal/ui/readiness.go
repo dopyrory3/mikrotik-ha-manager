@@ -1,6 +1,9 @@
 package ui
 
 import (
+	"fmt"
+
+	"mtha/internal/diff"
 	"mtha/internal/poll"
 	"mtha/internal/routeros"
 )
@@ -32,11 +35,11 @@ type Check struct {
 	Note  string
 }
 
-// evaluateReadiness applies the checks that are implementable in the
-// skeleton milestone. Drift and runtime-logic verification land in later
-// milestones (project.md §9) and are reported as not-yet-available, which
-// keeps the verdict from ever claiming a fully Ready state it can't back up.
-func evaluateReadiness(a, b poll.Snapshot, haveA, haveB bool) (Verdict, []Check) {
+// evaluateReadiness applies the checks that are implementable so far.
+// Runtime-logic verification lands in milestone 4 (project.md §9) and is
+// reported as not-yet-available, which keeps the verdict from claiming a
+// fully Ready state it can't back up.
+func evaluateReadiness(a, b poll.Snapshot, haveA, haveB bool, driftData map[string]diff.SectionDiff, driftErr error) (Verdict, []Check) {
 	checks := []Check{}
 
 	bothReachable := haveA && haveB && a.Reachable && b.Reachable
@@ -56,8 +59,8 @@ func evaluateReadiness(a, b poll.Snapshot, haveA, haveB bool) (Verdict, []Check)
 
 	checks = append(checks, Check{
 		Label: "No unresolved drift in synced sections",
-		OK:    false,
-		Note:  "drift detection not yet implemented",
+		OK:    driftClean(driftData),
+		Note:  driftNote(driftData, driftErr),
 	})
 
 	singleMaster := bothReachable && exactlyOneMaster(a.VRRP, b.VRRP)
@@ -135,6 +138,37 @@ func exactlyOneMaster(a, b []routeros.VRRPInstance) bool {
 		}
 	}
 	return len(a) > 0 && count == 1
+}
+
+func driftClean(driftData map[string]diff.SectionDiff) bool {
+	if driftData == nil {
+		return false
+	}
+	for _, sd := range driftData {
+		if !sd.Clean() {
+			return false
+		}
+	}
+	return true
+}
+
+func driftNote(driftData map[string]diff.SectionDiff, driftErr error) string {
+	if driftErr != nil {
+		return driftErr.Error()
+	}
+	if driftData == nil {
+		return "press 2 to check drift"
+	}
+	dirty := 0
+	for _, sd := range driftData {
+		if !sd.Clean() {
+			dirty++
+		}
+	}
+	if dirty > 0 {
+		return fmt.Sprintf("%d section(s) have drift", dirty)
+	}
+	return ""
 }
 
 func allNetwatchUp(entries []routeros.NetwatchEntry) bool {

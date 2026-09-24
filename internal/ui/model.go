@@ -1,7 +1,6 @@
 // Package ui holds the Bubble Tea root model and per-screen views.
-// Milestone 1 ships a single dashboard screen (project.md §9); the Drift,
-// Apply, Runtime, Failover and Events screens from §7.1 land in later
-// milestones.
+// Milestones 1-2 ship the Overview and Drift screens (project.md §9); Apply,
+// Runtime, Failover and Events from §7.1 land in later milestones.
 package ui
 
 import (
@@ -11,16 +10,26 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"mtha/internal/config"
+	"mtha/internal/diff"
 	"mtha/internal/poll"
 )
 
 // snapshotMsg carries a freshly polled snapshot from one of the pollers.
 type snapshotMsg poll.Snapshot
 
+// screenID selects which of §7.1's screens is active.
+type screenID int
+
+const (
+	screenOverview screenID = iota
+	screenDrift
+)
+
 // Model is the root Bubble Tea model.
 type Model struct {
 	pair      *config.Pair
 	writeMode bool
+	screen    screenID
 
 	pollers map[poll.RouterKey]*poll.Poller
 	cancel  context.CancelFunc
@@ -28,6 +37,14 @@ type Model struct {
 	snapshots map[poll.RouterKey]poll.Snapshot
 	haveA     bool
 	haveB     bool
+
+	driftSections   []string
+	driftData       map[string]diff.SectionDiff
+	driftFetching   bool
+	driftErr        error
+	driftSection    int
+	driftHunk       int
+	driftFocusHunks bool
 
 	width, height int
 	quitting      bool
@@ -37,10 +54,11 @@ type Model struct {
 // (one per router key "a"/"b"); New starts them and begins listening.
 func New(pair *config.Pair, writeMode bool, pollers map[poll.RouterKey]*poll.Poller) Model {
 	return Model{
-		pair:      pair,
-		writeMode: writeMode,
-		pollers:   pollers,
-		snapshots: make(map[poll.RouterKey]poll.Snapshot),
+		pair:          pair,
+		writeMode:     writeMode,
+		pollers:       pollers,
+		snapshots:     make(map[poll.RouterKey]poll.Snapshot),
+		driftSections: pair.Sync.Sections,
 	}
 }
 
@@ -87,19 +105,58 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case driftResultMsg:
+		m.driftFetching = false
+		m.driftErr = msg.err
+		if msg.err == nil {
+			m.driftData = msg.data
+		}
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
 
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
-			m.quitting = true
-			if m.cancel != nil {
-				m.cancel()
-			}
-			return m, tea.Quit
+		return m.handleKey(msg)
+	}
+	return m, nil
+}
+
+func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "ctrl+c":
+		m.quitting = true
+		if m.cancel != nil {
+			m.cancel()
 		}
+		return m, tea.Quit
+
+	case "1":
+		m.screen = screenOverview
+		return m, nil
+
+	case "2":
+		return m.enterDriftScreen()
+
+	case "tab":
+		if m.screen == screenOverview {
+			return m.enterDriftScreen()
+		}
+		m.screen = screenOverview
+		return m, nil
+	}
+
+	if m.screen == screenDrift {
+		return m.handleDriftKey(msg)
+	}
+	return m, nil
+}
+
+func (m Model) enterDriftScreen() (tea.Model, tea.Cmd) {
+	m.screen = screenDrift
+	if m.driftData == nil && !m.driftFetching {
+		return m.startDriftFetch()
 	}
 	return m, nil
 }
@@ -108,7 +165,12 @@ func (m Model) View() string {
 	if m.quitting {
 		return ""
 	}
-	return renderDashboard(m)
+	switch m.screen {
+	case screenDrift:
+		return renderDrift(m)
+	default:
+		return renderDashboard(m)
+	}
 }
 
 // pollInterval is the default dashboard poll interval (project.md §6).
