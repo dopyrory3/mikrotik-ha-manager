@@ -127,7 +127,7 @@ screens work without them, for pairs that already have VRRP configured by
 hand. When runtime deploy creates the interface, router `a` starts at
 `runtime.priority_master` and router `b` at `runtime.priority_backup` — a
 fixed v1 convention, not something you choose per pair. Version, interval and
-preempt are fixed too (`3`, `1s`, `yes`) rather than exposed as config.
+preemption-mode are fixed too (`3`, `1s`, `true`) rather than exposed as config.
 
 ### Sync
 

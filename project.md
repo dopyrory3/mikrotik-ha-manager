@@ -136,6 +136,11 @@ Anything else shows **Degraded** with the specific reasons listed.
 
 ### 5.5 Runtime logic deployment
 
+Also provisions the VRRP interface(s) and VIP(s) a pair's `vrrp` entries
+describe (`interface/vrrp`, `ip/address`) — extended beyond this section's
+original scope so the tool can set a pair up from nothing, not only manage
+automation around an interface created by hand.
+
 Templates, rendered from the pair definition and pushed to both routers:
 
 - `/tool/netwatch` entries per target with `up-script` / `down-script` that raise/lower VRRP priority (`priority_master` ↔ `priority_degraded`).
@@ -233,10 +238,10 @@ Data flow: `poll` goroutines emit `SnapshotMsg` per router → root model update
 
 ## 9. Milestones
 
-1. **Skeleton** — pair config, REST client, one-screen dashboard showing both routers' basic status and VRRP state.
-2. **Drift** — section readers, normaliser, diff engine, drift screen (read-only).
+1. **Skeleton** — pair config, REST client, one-screen dashboard showing both routers' basic status and VRRP state. Done.
+2. **Drift** — section readers, normaliser, diff engine, drift screen (read-only). Done.
 3. **Apply** — planner, dry run, backup, apply, verify. `--write` gate.
-4. **Runtime** — templates, deploy, verify, remove.
+4. **Runtime** — templates, deploy, verify, remove. Done — extended beyond the original §5.5 scope to also provision the VRRP interface(s) and VIP(s) themselves (`interface/vrrp`, `ip/address`), not only the automation layered on top of one.
 5. **Failover** — pre-flight, action, live view, VIP probe.
 6. **Events** — log merge, timeline.
 7. **Polish** — multi-pair, help, release pipeline.

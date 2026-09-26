@@ -6,6 +6,7 @@ import (
 	"mtha/internal/diff"
 	"mtha/internal/poll"
 	"mtha/internal/routeros"
+	"mtha/internal/runtime"
 )
 
 // Verdict is the overall readiness state shown on the dashboard.
@@ -35,11 +36,11 @@ type Check struct {
 	Note  string
 }
 
-// evaluateReadiness applies the checks that are implementable so far.
-// Runtime-logic verification lands in milestone 4 (project.md §9) and is
-// reported as not-yet-available, which keeps the verdict from claiming a
-// fully Ready state it can't back up.
-func evaluateReadiness(a, b poll.Snapshot, haveA, haveB bool, driftData map[string]diff.SectionDiff, driftErr error) (Verdict, []Check) {
+// evaluateReadiness applies the §5.2 checks. Like drift, runtime status is
+// not fetched automatically (runtimeStatus is nil until the Runtime screen
+// has verified at least once), which keeps the verdict from claiming a fully
+// Ready state it hasn't actually confirmed.
+func evaluateReadiness(a, b poll.Snapshot, haveA, haveB bool, driftData map[string]diff.SectionDiff, driftErr error, runtimeStatus runtime.Status, runtimeErr error) (Verdict, []Check) {
 	checks := []Check{}
 
 	bothReachable := haveA && haveB && a.Reachable() && b.Reachable()
@@ -73,8 +74,8 @@ func evaluateReadiness(a, b poll.Snapshot, haveA, haveB bool, driftData map[stri
 
 	checks = append(checks, Check{
 		Label: "Runtime logic present and identical on both routers",
-		OK:    false,
-		Note:  "runtime deployment not yet implemented",
+		OK:    runtimeErr == nil && runtimeStatus != nil && runtimeStatus.Clean(),
+		Note:  runtimeNote(runtimeStatus, runtimeErr),
 	})
 
 	netwatchKnown := a.NetwatchErr == nil && b.NetwatchErr == nil
@@ -222,6 +223,16 @@ func driftNote(driftData map[string]diff.SectionDiff, driftErr error) string {
 		return fmt.Sprintf("%d section(s) have drift", dirty)
 	}
 	return ""
+}
+
+func runtimeNote(status runtime.Status, err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	if status == nil {
+		return "press 3 to check runtime"
+	}
+	return status.FirstIssue()
 }
 
 func allNetwatchUp(entries []routeros.NetwatchEntry) bool {

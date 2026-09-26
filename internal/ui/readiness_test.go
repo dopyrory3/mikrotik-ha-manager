@@ -6,6 +6,7 @@ import (
 	"mtha/internal/diff"
 	"mtha/internal/poll"
 	"mtha/internal/routeros"
+	"mtha/internal/runtime"
 )
 
 // The check labels are asserted literally: they are the §5.2 criteria shown
@@ -24,6 +25,13 @@ func cleanDrift() map[string]diff.SectionDiff {
 	return map[string]diff.SectionDiff{"ip/service": {Section: "ip/service"}}
 }
 
+func cleanRuntime() runtime.Status {
+	return runtime.Status{
+		"a": {{Label: "netwatch 1.1.1.1", State: runtime.StateOK}},
+		"b": {{Label: "netwatch 1.1.1.1", State: runtime.StateOK}},
+	}
+}
+
 func check(t *testing.T, checks []Check, label string) Check {
 	t.Helper()
 	for _, c := range checks {
@@ -36,7 +44,7 @@ func check(t *testing.T, checks []Check, label string) Check {
 }
 
 func TestReadinessUnknownBeforeFirstPoll(t *testing.T) {
-	verdict, checks := evaluateReadiness(poll.Snapshot{}, poll.Snapshot{}, false, false, nil, nil)
+	verdict, checks := evaluateReadiness(poll.Snapshot{}, poll.Snapshot{}, false, false, nil, nil, nil, nil)
 	if verdict != VerdictUnknown {
 		t.Errorf("verdict = %v, want Unknown before any snapshot", verdict)
 	}
@@ -45,33 +53,78 @@ func TestReadinessUnknownBeforeFirstPoll(t *testing.T) {
 	}
 }
 
-// The Runtime check is hardcoded not-yet-implemented (milestone 4), so a
-// pair that is otherwise perfect must still read Degraded rather than Ready.
-// This test pins that known limitation and will need updating when milestone
-// 4 lands.
-func TestReadinessDegradedWhileRuntimeNotImplemented(t *testing.T) {
+func TestReadinessReadyWhenEverythingClean(t *testing.T) {
 	verdict, checks := evaluateReadiness(
 		snapshot("7.15.3", "master", "up"),
 		snapshot("7.15.3", "backup", "up"),
-		true, true, cleanDrift(), nil,
+		true, true, cleanDrift(), nil, cleanRuntime(), nil,
+	)
+
+	if verdict != VerdictReady {
+		t.Errorf("verdict = %v, want Ready when every check is satisfied", verdict)
+	}
+	for _, c := range checks {
+		if !c.OK {
+			t.Errorf("check %q = false, want true when the pair is fully healthy", c.Label)
+		}
+	}
+}
+
+func TestReadinessRuntimeNotYetChecked(t *testing.T) {
+	verdict, checks := evaluateReadiness(
+		snapshot("7.15.3", "master", "up"),
+		snapshot("7.15.3", "backup", "up"),
+		true, true, cleanDrift(), nil, nil, nil,
 	)
 
 	if verdict != VerdictDegraded {
-		t.Errorf("verdict = %v, want Degraded (runtime logic not yet implemented)", verdict)
+		t.Errorf("verdict = %v, want Degraded before runtime has been verified", verdict)
 	}
-	for _, label := range []string{
-		"Both routers reachable",
-		"RouterOS versions match",
-		"No unresolved drift in synced sections",
-		"Exactly one master per VRRP instance",
-		"Standby netwatch targets up",
-	} {
-		if c := check(t, checks, label); !c.OK {
-			t.Errorf("check %q = false, want true when the pair is healthy", label)
-		}
+	c := check(t, checks, "Runtime logic present and identical on both routers")
+	if c.OK {
+		t.Error("runtime check passed with nil status (never verified)")
 	}
+	if c.Note != "press 3 to check runtime" {
+		t.Errorf("note = %q, want the prompt to check runtime", c.Note)
+	}
+}
+
+func TestReadinessRuntimeMissingItemBlocksReadiness(t *testing.T) {
+	dirty := runtime.Status{
+		"a": {{Label: "vrrp interface vrrp-lan", State: runtime.StateMissing}},
+		"b": {{Label: "vrrp interface vrrp-lan", State: runtime.StateOK}},
+	}
+
+	verdict, checks := evaluateReadiness(
+		snapshot("7.15.3", "master", "up"),
+		snapshot("7.15.3", "backup", "up"),
+		true, true, cleanDrift(), nil, dirty, nil,
+	)
+
+	if verdict != VerdictDegraded {
+		t.Errorf("verdict = %v, want Degraded with a missing runtime item", verdict)
+	}
+	c := check(t, checks, "Runtime logic present and identical on both routers")
+	if c.OK {
+		t.Error("runtime check passed despite a missing item")
+	}
+	if c.Note == "" {
+		t.Error("note should name the missing item")
+	}
+}
+
+// A runtime verify error must block the check even if runtimeStatus still
+// holds a stale clean result from a previous successful verify (mirrors the
+// equivalent drift behavior).
+func TestReadinessRuntimeErrorOverridesStaleCleanData(t *testing.T) {
+	_, checks := evaluateReadiness(
+		snapshot("7.15.3", "master", "up"),
+		snapshot("7.15.3", "backup", "up"),
+		true, true, cleanDrift(), nil, cleanRuntime(), errFake{},
+	)
+
 	if c := check(t, checks, "Runtime logic present and identical on both routers"); c.OK {
-		t.Error("runtime check passed; it is intentionally unimplemented until milestone 4")
+		t.Error("runtime check passed using stale clean data despite a fresh verify error")
 	}
 }
 
@@ -79,7 +132,7 @@ func TestReadinessVersionMismatch(t *testing.T) {
 	verdict, checks := evaluateReadiness(
 		snapshot("7.15.3", "master", "up"),
 		snapshot("7.16.0", "backup", "up"),
-		true, true, cleanDrift(), nil,
+		true, true, cleanDrift(), nil, cleanRuntime(), nil,
 	)
 
 	if verdict != VerdictDegraded {
@@ -105,7 +158,7 @@ func TestReadinessDriftBlocksReadiness(t *testing.T) {
 	_, checks := evaluateReadiness(
 		snapshot("7.15.3", "master", "up"),
 		snapshot("7.15.3", "backup", "up"),
-		true, true, dirty, nil,
+		true, true, dirty, nil, cleanRuntime(), nil,
 	)
 
 	c := check(t, checks, "No unresolved drift in synced sections")
@@ -121,7 +174,7 @@ func TestReadinessBothMasterIsNotReady(t *testing.T) {
 	_, checks := evaluateReadiness(
 		snapshot("7.15.3", "master", "up"),
 		snapshot("7.15.3", "master", "up"),
-		true, true, cleanDrift(), nil,
+		true, true, cleanDrift(), nil, cleanRuntime(), nil,
 	)
 
 	if c := check(t, checks, "Exactly one master per VRRP instance"); c.OK {
@@ -133,7 +186,7 @@ func TestReadinessNetwatchDown(t *testing.T) {
 	_, checks := evaluateReadiness(
 		snapshot("7.15.3", "master", "up"),
 		snapshot("7.15.3", "backup", "down"),
-		true, true, cleanDrift(), nil,
+		true, true, cleanDrift(), nil, cleanRuntime(), nil,
 	)
 
 	if c := check(t, checks, "Standby netwatch targets up"); c.OK {
@@ -147,7 +200,7 @@ func TestReadinessUnreachableRouter(t *testing.T) {
 	verdict, checks := evaluateReadiness(
 		down,
 		snapshot("7.15.3", "backup", "up"),
-		true, true, cleanDrift(), nil,
+		true, true, cleanDrift(), nil, cleanRuntime(), nil,
 	)
 
 	if verdict != VerdictDegraded {
@@ -214,7 +267,7 @@ func TestReadinessVRRPFetchErrorFailsClosed(t *testing.T) {
 	bSnap.VRRPErr = errFake{}
 	bSnap.VRRP = nil // fetch failed, not "no instances"
 
-	_, checks := evaluateReadiness(aSnap, bSnap, true, true, cleanDrift(), nil)
+	_, checks := evaluateReadiness(aSnap, bSnap, true, true, cleanDrift(), nil, cleanRuntime(), nil)
 
 	if c := check(t, checks, "Exactly one master per VRRP instance"); c.OK {
 		t.Error("VRRP check passed despite a fetch error on router b; must fail closed")
@@ -227,7 +280,7 @@ func TestReadinessNetwatchFetchErrorFailsClosed(t *testing.T) {
 	bSnap.NetwatchErr = errFake{}
 	bSnap.Netwatch = nil
 
-	_, checks := evaluateReadiness(aSnap, bSnap, true, true, cleanDrift(), nil)
+	_, checks := evaluateReadiness(aSnap, bSnap, true, true, cleanDrift(), nil, cleanRuntime(), nil)
 
 	if c := check(t, checks, "Standby netwatch targets up"); c.OK {
 		t.Error("netwatch check passed despite a fetch error on router b; must fail closed")
@@ -240,7 +293,7 @@ func TestReadinessDriftErrorOverridesStaleCleanData(t *testing.T) {
 	_, checks := evaluateReadiness(
 		snapshot("7.15.3", "master", "up"),
 		snapshot("7.15.3", "backup", "up"),
-		true, true, cleanDrift(), errFake{},
+		true, true, cleanDrift(), errFake{}, cleanRuntime(), nil,
 	)
 
 	if c := check(t, checks, "No unresolved drift in synced sections"); c.OK {
