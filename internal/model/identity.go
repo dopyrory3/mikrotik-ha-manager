@@ -5,8 +5,9 @@ import "fmt"
 // BuildIdentities computes the stable per-entry identity used to match rows
 // between two routers, per project.md §5.3: the entry's comment if it has
 // one, otherwise a per-section fallback (chain + ordinal for firewall
-// rules, address for DNS static, name for most other sections, and finally
-// a bare ordinal if nothing else identifies the row).
+// rules, list+address for firewall address-list entries since they have no
+// name field, address for DNS static, name for most other sections, and
+// finally a bare ordinal if nothing else identifies the row).
 func BuildIdentities(section string, entries []Entry) []string {
 	ids := make([]string, len(entries))
 	chainOrdinal := map[string]int{}
@@ -26,6 +27,16 @@ func BuildIdentities(section string, entries []Entry) []string {
 			}
 			chainOrdinal[chain]++
 			ids[i] = fmt.Sprintf("%s#%d", chain, chainOrdinal[chain])
+
+		case "ip/firewall/address-list":
+			list, _ := stringField(e, "list")
+			addr, _ := stringField(e, "address")
+			if list != "" || addr != "" {
+				ids[i] = list + "|" + addr
+				continue
+			}
+			plainOrdinal++
+			ids[i] = fmt.Sprintf("#%d", plainOrdinal)
 
 		case "ip/dns/static":
 			if addr, ok := stringField(e, "address"); ok && addr != "" {

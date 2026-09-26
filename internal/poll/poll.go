@@ -4,6 +4,7 @@ package poll
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"mtha/internal/routeros"
@@ -22,6 +23,15 @@ type Snapshot struct {
 	Identity *routeros.Identity
 	VRRP     []routeros.VRRPInstance
 	Netwatch []routeros.NetwatchEntry
+
+	// IdentityErr, VRRPErr and NetwatchErr record a failure fetching that
+	// sub-endpoint separately from Err (which only covers the initial
+	// reachability probe). A nil field paired with a nil slice means the
+	// endpoint returned no entries, not that the fetch failed; callers
+	// that need to tell "empty" from "unknown" must check these.
+	IdentityErr error
+	VRRPErr     error
+	NetwatchErr error
 
 	PolledAt time.Time
 }
@@ -75,15 +85,34 @@ func (p *Poller) poll(ctx context.Context) {
 	snap.Reachable = true
 	snap.Resource = resource
 
-	if id, err := p.Client.Identity(ctx); err == nil {
-		snap.Identity = id
-	}
-	if vrrp, err := p.Client.VRRP(ctx); err == nil {
-		snap.VRRP = vrrp
-	}
-	if nw, err := p.Client.Netwatch(ctx); err == nil {
-		snap.Netwatch = nw
-	}
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	go func() {
+		defer wg.Done()
+		if id, err := p.Client.Identity(ctx); err != nil {
+			snap.IdentityErr = err
+		} else {
+			snap.Identity = id
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if vrrp, err := p.Client.VRRP(ctx); err != nil {
+			snap.VRRPErr = err
+		} else {
+			snap.VRRP = vrrp
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if nw, err := p.Client.Netwatch(ctx); err != nil {
+			snap.NetwatchErr = err
+		} else {
+			snap.Netwatch = nw
+		}
+	}()
+	wg.Wait()
 
 	p.emit(snap)
 }

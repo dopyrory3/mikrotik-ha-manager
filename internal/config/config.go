@@ -79,7 +79,7 @@ func Load(path string) (*File, error) {
 		return nil, fmt.Errorf("parse pair file %s: %w", path, err)
 	}
 
-	for i, p := range f.Pairs {
+	for _, p := range f.Pairs {
 		if _, ok := p.Routers["a"]; !ok {
 			return nil, fmt.Errorf("pair %q: missing router \"a\"", p.Name)
 		}
@@ -91,7 +91,6 @@ func Load(path string) (*File, error) {
 				return nil, fmt.Errorf("pair %q router %q: invalid port %d", p.Name, key, router.Port)
 			}
 		}
-		_ = i
 	}
 
 	return &f, nil

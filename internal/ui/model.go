@@ -11,6 +11,7 @@ import (
 
 	"mtha/internal/config"
 	"mtha/internal/diff"
+	"mtha/internal/model"
 	"mtha/internal/poll"
 )
 
@@ -32,6 +33,7 @@ type Model struct {
 	screen    screenID
 
 	pollers map[poll.RouterKey]*poll.Poller
+	ctx     context.Context
 	cancel  context.CancelFunc
 
 	snapshots map[poll.RouterKey]poll.Snapshot
@@ -53,12 +55,19 @@ type Model struct {
 // New builds the root model for a pair. pollers must already be constructed
 // (one per router key "a"/"b"); New starts them and begins listening.
 func New(pair *config.Pair, writeMode bool, pollers map[poll.RouterKey]*poll.Poller) Model {
+	driftSections := make([]string, 0, len(pair.Sync.Sections))
+	for _, s := range pair.Sync.Sections {
+		if !model.SectionExempt(s, pair.Sync.Exempt) {
+			driftSections = append(driftSections, s)
+		}
+	}
+
 	return Model{
 		pair:          pair,
 		writeMode:     writeMode,
 		pollers:       pollers,
 		snapshots:     make(map[poll.RouterKey]poll.Snapshot),
-		driftSections: pair.Sync.Sections,
+		driftSections: driftSections,
 	}
 }
 
@@ -70,13 +79,14 @@ func (m Model) Init() tea.Cmd {
 		go p.Run(ctx)
 		cmds = append(cmds, waitForSnapshot(p.Router, p.C))
 	}
-	cmds = append(cmds, func() tea.Msg { return cancelHolderMsg{cancel} })
+	cmds = append(cmds, func() tea.Msg { return cancelHolderMsg{ctx, cancel} })
 	return tea.Batch(cmds...)
 }
 
-// cancelHolderMsg smuggles the context.CancelFunc created in Init back into
-// Update, since Init can't mutate the model it returns.
+// cancelHolderMsg smuggles the context.Context/CancelFunc pair created in
+// Init back into Update, since Init can't mutate the model it returns.
 type cancelHolderMsg struct {
+	ctx    context.Context
 	cancel context.CancelFunc
 }
 
@@ -89,6 +99,7 @@ func waitForSnapshot(router poll.RouterKey, ch chan poll.Snapshot) tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case cancelHolderMsg:
+		m.ctx = msg.ctx
 		m.cancel = msg.cancel
 		return m, nil
 
@@ -108,9 +119,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case driftResultMsg:
 		m.driftFetching = false
 		m.driftErr = msg.err
-		if msg.err == nil {
-			m.driftData = msg.data
-		}
+		m.driftData = msg.data
 		return m, nil
 
 	case tea.WindowSizeMsg:

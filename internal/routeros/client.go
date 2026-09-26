@@ -26,7 +26,7 @@ type Client struct {
 
 // Config configures a Client for one router.
 type Config struct {
-	Host        string
+	Host string
 	// Port overrides the REST API (www-ssl) port. Zero means the standard
 	// HTTPS port (443); set it when a router's www-ssl service has been
 	// moved to a non-standard port. It is unrelated to the legacy binary

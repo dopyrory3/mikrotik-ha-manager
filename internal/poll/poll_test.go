@@ -133,6 +133,9 @@ func TestPollToleratesPartialEndpointFailure(t *testing.T) {
 	if snap.VRRP != nil {
 		t.Errorf("VRRP = %+v, want nil when its endpoint fails", snap.VRRP)
 	}
+	if snap.VRRPErr == nil {
+		t.Error("VRRPErr = nil, want the sub-endpoint's error so callers can tell failure from empty")
+	}
 }
 
 func TestEmitKeepsOnlyTheFreshestSnapshot(t *testing.T) {

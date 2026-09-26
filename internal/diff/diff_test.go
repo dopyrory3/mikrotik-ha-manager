@@ -82,6 +82,29 @@ func TestCompareRespectsFieldExempt(t *testing.T) {
 	}
 }
 
+func TestCompareDoesNotDropEntriesOnIdentityCollision(t *testing.T) {
+	// Both entries share the address-list identity "blocklist|10.0.0.5"
+	// (same list+address, no comment to disambiguate); a naive id->entry
+	// map would let the second overwrite the first and silently lose any
+	// diff against it.
+	a := []model.Entry{
+		{"list": "blocklist", "address": "10.0.0.5", "timeout": "1h"},
+		{"list": "blocklist", "address": "10.0.0.5", "timeout": "2h"},
+	}
+	b := []model.Entry{
+		{"list": "blocklist", "address": "10.0.0.5", "timeout": "1h"},
+		{"list": "blocklist", "address": "10.0.0.5", "timeout": "3h"},
+	}
+
+	sd := Compare("ip/firewall/address-list", a, b, nil)
+	if len(sd.Hunks) != 1 {
+		t.Fatalf("expected 1 hunk for the second colliding entry, got %d: %+v", len(sd.Hunks), sd.Hunks)
+	}
+	if !sd.Hunks[0].OnA || !sd.Hunks[0].OnB {
+		t.Fatalf("expected a changed hunk present on both sides, got %+v", sd.Hunks[0])
+	}
+}
+
 func TestCompareFirewallUsesChainOrdinalWhenNoComment(t *testing.T) {
 	a := []model.Entry{
 		{"chain": "input", "action": "accept"},

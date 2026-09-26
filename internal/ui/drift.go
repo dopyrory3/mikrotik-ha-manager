@@ -23,19 +23,30 @@ func (m Model) startDriftFetch() (tea.Model, tea.Cmd) {
 	m.driftFetching = true
 	m.driftErr = nil
 
+	ctx := m.ctx
+	if ctx == nil {
+		// Init's cancelHolderMsg cmd hasn't resolved yet; fall back rather
+		// than pass a nil context. The fetch just won't be cancellable by
+		// quitting in this narrow window.
+		ctx = context.Background()
+	}
 	clientA := m.pollers["a"].Client
 	clientB := m.pollers["b"].Client
 	sections := m.pair.Sync.Sections
 	exempt := m.pair.Sync.Exempt
 
 	return m, func() tea.Msg {
-		return fetchDrift(clientA, clientB, sections, exempt)
+		return fetchDrift(ctx, clientA, clientB, sections, exempt)
 	}
 }
 
-func fetchDrift(clientA, clientB *routeros.Client, sections, exempt []string) driftResultMsg {
-	ctx := context.Background()
+// fetchDrift fetches every configured, non-exempt section from both routers.
+// A section that fails to fetch is skipped rather than aborting the whole
+// run, so sections that did succeed are still returned alongside the first
+// error encountered.
+func fetchDrift(ctx context.Context, clientA, clientB *routeros.Client, sections, exempt []string) driftResultMsg {
 	data := make(map[string]diff.SectionDiff, len(sections))
+	var firstErr error
 
 	for _, section := range sections {
 		if model.SectionExempt(section, exempt) {
@@ -44,17 +55,23 @@ func fetchDrift(clientA, clientB *routeros.Client, sections, exempt []string) dr
 
 		aEntries, err := clientA.GetSection(ctx, section)
 		if err != nil {
-			return driftResultMsg{err: fmt.Errorf("fetch %s from router a: %w", section, err)}
+			if firstErr == nil {
+				firstErr = fmt.Errorf("fetch %s from router a: %w", section, err)
+			}
+			continue
 		}
 		bEntries, err := clientB.GetSection(ctx, section)
 		if err != nil {
-			return driftResultMsg{err: fmt.Errorf("fetch %s from router b: %w", section, err)}
+			if firstErr == nil {
+				firstErr = fmt.Errorf("fetch %s from router b: %w", section, err)
+			}
+			continue
 		}
 
 		data[section] = diff.Compare(section, aEntries, bEntries, exempt)
 	}
 
-	return driftResultMsg{data: data}
+	return driftResultMsg{data: data, err: firstErr}
 }
 
 func (m Model) handleDriftKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -111,14 +128,18 @@ func renderDrift(m Model) string {
 	switch {
 	case m.driftFetching:
 		b.WriteString(styleMuted.Render("fetching drift..."))
-	case m.driftErr != nil:
-		b.WriteString(styleDown.Render("error: " + m.driftErr.Error()))
-	case m.driftData == nil:
-		b.WriteString(styleMuted.Render("press r to fetch drift"))
-	default:
+	case m.driftData != nil:
+		if m.driftErr != nil {
+			b.WriteString(styleDown.Render("error: " + m.driftErr.Error()))
+			b.WriteString("\n\n")
+		}
 		b.WriteString(renderSectionList(m))
 		b.WriteString("\n\n")
 		b.WriteString(renderHunkList(m))
+	case m.driftErr != nil:
+		b.WriteString(styleDown.Render("error: " + m.driftErr.Error()))
+	default:
+		b.WriteString(styleMuted.Render("press r to fetch drift"))
 	}
 
 	b.WriteString("\n\n")
@@ -137,15 +158,20 @@ func renderSectionList(m Model) string {
 	}
 
 	for i, section := range m.driftSections {
-		sd := m.driftData[section]
+		sd, ok := m.driftData[section]
 		cursor := "  "
 		if i == m.driftSection && !m.driftFocusHunks {
 			cursor = "> "
 		}
 
-		status := styleReady.Render("clean")
-		if !sd.Clean() {
+		var status string
+		switch {
+		case !ok:
+			status = styleDown.Render("fetch failed")
+		case !sd.Clean():
 			status = styleDegraded.Render(fmt.Sprintf("%d hunk(s)", len(sd.Hunks)))
+		default:
+			status = styleReady.Render("clean")
 		}
 		fmt.Fprintf(&b, "%s%-30s %s\n", cursor, section, status)
 	}
@@ -159,11 +185,15 @@ func renderHunkList(m Model) string {
 	}
 
 	section := m.driftSections[m.driftSection]
-	sd := m.driftData[section]
+	sd, ok := m.driftData[section]
 
 	b.WriteString(styleTitle.Render("Hunks: " + section))
 	b.WriteString("\n")
 
+	if !ok {
+		b.WriteString(styleDown.Render("  fetch failed for this section; see error above\n"))
+		return b.String()
+	}
 	if sd.Clean() {
 		b.WriteString(styleReady.Render("  no differences\n"))
 		return b.String()

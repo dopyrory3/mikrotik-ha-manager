@@ -23,7 +23,7 @@ type Identity struct {
 
 // VRRPInstance is one entry of GET /rest/interface/vrrp.
 type VRRPInstance struct {
-	ID        string `json:"id"`
+	ID        string `json:".id"`
 	Name      string `json:"name"`
 	Interface string `json:"interface"`
 	Priority  string `json:"priority"`
@@ -33,7 +33,7 @@ type VRRPInstance struct {
 
 // NetwatchEntry is one entry of GET /rest/tool/netwatch.
 type NetwatchEntry struct {
-	ID       string `json:"id"`
+	ID       string `json:".id"`
 	Host     string `json:"host"`
 	Status   string `json:"status"`
 	Comment  string `json:"comment"`

@@ -59,15 +59,16 @@ func evaluateReadiness(a, b poll.Snapshot, haveA, haveB bool, driftData map[stri
 
 	checks = append(checks, Check{
 		Label: "No unresolved drift in synced sections",
-		OK:    driftClean(driftData),
+		OK:    driftErr == nil && driftClean(driftData),
 		Note:  driftNote(driftData, driftErr),
 	})
 
-	singleMaster := bothReachable && exactlyOneMaster(a.VRRP, b.VRRP)
+	vrrpKnown := a.VRRPErr == nil && b.VRRPErr == nil
+	singleMaster := bothReachable && vrrpKnown && exactlyOneMaster(a.VRRP, b.VRRP)
 	checks = append(checks, Check{
 		Label: "Exactly one master per VRRP instance",
 		OK:    singleMaster,
-		Note:  "",
+		Note:  vrrpNote(a, b, bothReachable),
 	})
 
 	checks = append(checks, Check{
@@ -76,11 +77,12 @@ func evaluateReadiness(a, b poll.Snapshot, haveA, haveB bool, driftData map[stri
 		Note:  "runtime deployment not yet implemented",
 	})
 
-	netwatchUp := bothReachable && allNetwatchUp(a.Netwatch) && allNetwatchUp(b.Netwatch)
+	netwatchKnown := a.NetwatchErr == nil && b.NetwatchErr == nil
+	netwatchUp := bothReachable && netwatchKnown && allNetwatchUp(a.Netwatch) && allNetwatchUp(b.Netwatch)
 	checks = append(checks, Check{
 		Label: "Standby netwatch targets up",
 		OK:    netwatchUp,
-		Note:  "",
+		Note:  netwatchNote(a, b, bothReachable),
 	})
 
 	verdict := VerdictDegraded
@@ -125,19 +127,70 @@ func versionNote(a, b poll.Snapshot, bothReachable bool) string {
 	return ""
 }
 
+// exactlyOneMaster checks the §5.2 criterion per VRRP instance, matching
+// instances between routers by name (falling back to interface), not by
+// summing master counts across every instance on both routers.
 func exactlyOneMaster(a, b []routeros.VRRPInstance) bool {
-	count := 0
+	masters := map[string]int{}
+	seen := map[string]bool{}
+
 	for _, v := range a {
+		key := vrrpInstanceKey(v)
+		seen[key] = true
 		if v.State == "master" {
-			count++
+			masters[key]++
 		}
 	}
 	for _, v := range b {
+		key := vrrpInstanceKey(v)
+		seen[key] = true
 		if v.State == "master" {
-			count++
+			masters[key]++
 		}
 	}
-	return len(a) > 0 && count == 1
+
+	if len(seen) == 0 {
+		return false
+	}
+	for key := range seen {
+		if masters[key] != 1 {
+			return false
+		}
+	}
+	return true
+}
+
+func vrrpInstanceKey(v routeros.VRRPInstance) string {
+	if v.Name != "" {
+		return v.Name
+	}
+	return v.Interface
+}
+
+func vrrpNote(a, b poll.Snapshot, bothReachable bool) string {
+	if !bothReachable {
+		return ""
+	}
+	if a.VRRPErr != nil {
+		return "router a: " + a.VRRPErr.Error()
+	}
+	if b.VRRPErr != nil {
+		return "router b: " + b.VRRPErr.Error()
+	}
+	return ""
+}
+
+func netwatchNote(a, b poll.Snapshot, bothReachable bool) string {
+	if !bothReachable {
+		return ""
+	}
+	if a.NetwatchErr != nil {
+		return "router a: " + a.NetwatchErr.Error()
+	}
+	if b.NetwatchErr != nil {
+		return "router b: " + b.NetwatchErr.Error()
+	}
+	return ""
 }
 
 func driftClean(driftData map[string]diff.SectionDiff) bool {

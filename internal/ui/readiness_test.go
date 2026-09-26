@@ -170,6 +170,85 @@ type errFake struct{}
 
 func (errFake) Error() string { return "dial tcp: connection refused" }
 
+// A healthy split pair (one master per instance, on opposite routers) must
+// not be flagged Degraded just because summing masters across both routers'
+// full instance lists happens to exceed 1.
+func TestExactlyOneMasterAcrossMultipleInstances(t *testing.T) {
+	a := []routeros.VRRPInstance{
+		{Name: "vrrp-lan", State: "master"},
+		{Name: "vrrp-wan", State: "backup"},
+	}
+	b := []routeros.VRRPInstance{
+		{Name: "vrrp-lan", State: "backup"},
+		{Name: "vrrp-wan", State: "master"},
+	}
+
+	if !exactlyOneMaster(a, b) {
+		t.Error("exactlyOneMaster = false for a correctly split multi-instance pair, want true")
+	}
+}
+
+// Summed across both routers' full instance lists, this case totals exactly
+// one master (vrrp-lan's), which the old bug would have accepted as Ready
+// even though vrrp-wan has no master at all on either router.
+func TestExactlyOneMasterDetectsInstanceWithNoMaster(t *testing.T) {
+	a := []routeros.VRRPInstance{
+		{Name: "vrrp-lan", State: "master"},
+		{Name: "vrrp-wan", State: "backup"},
+	}
+	b := []routeros.VRRPInstance{
+		{Name: "vrrp-lan", State: "backup"},
+		{Name: "vrrp-wan", State: "backup"},
+	}
+
+	if exactlyOneMaster(a, b) {
+		t.Error("exactlyOneMaster = true with vrrp-wan having zero masters, want false")
+	}
+}
+
+// A VRRP fetch failure on either router must not silently read as "no
+// instances contributed" (which could mask a real dual-master condition);
+// the check must refuse to pass with unknown VRRP state.
+func TestReadinessVRRPFetchErrorFailsClosed(t *testing.T) {
+	aSnap := snapshot("7.15.3", "master", "up")
+	bSnap := snapshot("7.15.3", "master", "up") // real split-brain
+	bSnap.VRRPErr = errFake{}
+	bSnap.VRRP = nil // fetch failed, not "no instances"
+
+	_, checks := evaluateReadiness(aSnap, bSnap, true, true, cleanDrift(), nil)
+
+	if c := check(t, checks, "Exactly one master per VRRP instance"); c.OK {
+		t.Error("VRRP check passed despite a fetch error on router b; must fail closed")
+	}
+}
+
+func TestReadinessNetwatchFetchErrorFailsClosed(t *testing.T) {
+	aSnap := snapshot("7.15.3", "master", "up")
+	bSnap := snapshot("7.15.3", "backup", "up")
+	bSnap.NetwatchErr = errFake{}
+	bSnap.Netwatch = nil
+
+	_, checks := evaluateReadiness(aSnap, bSnap, true, true, cleanDrift(), nil)
+
+	if c := check(t, checks, "Standby netwatch targets up"); c.OK {
+		t.Error("netwatch check passed despite a fetch error on router b; must fail closed")
+	}
+}
+
+// A drift fetch error must block the "clean" verdict even if driftData still
+// holds a stale clean result from a previous successful fetch.
+func TestReadinessDriftErrorOverridesStaleCleanData(t *testing.T) {
+	_, checks := evaluateReadiness(
+		snapshot("7.15.3", "master", "up"),
+		snapshot("7.15.3", "backup", "up"),
+		true, true, cleanDrift(), errFake{},
+	)
+
+	if c := check(t, checks, "No unresolved drift in synced sections"); c.OK {
+		t.Error("drift check passed using stale clean data despite a fresh fetch error")
+	}
+}
+
 func TestExactlyOneMaster(t *testing.T) {
 	cases := []struct {
 		name string

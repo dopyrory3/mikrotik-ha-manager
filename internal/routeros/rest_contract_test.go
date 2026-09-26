@@ -127,12 +127,16 @@ func TestWriteMethodsMapToRESTVerbs(t *testing.T) {
 	}{
 		{
 			name: "Post creates via PUT",
-			call: func(c *Client) error { return c.Post(context.Background(), "/system/script", map[string]string{"name": "x"}, nil) },
+			call: func(c *Client) error {
+				return c.Post(context.Background(), "/system/script", map[string]string{"name": "x"}, nil)
+			},
 			want: http.MethodPut,
 		},
 		{
 			name: "Patch updates",
-			call: func(c *Client) error { return c.Patch(context.Background(), "/ip/service/*1", map[string]string{"port": "22"}, nil) },
+			call: func(c *Client) error {
+				return c.Patch(context.Background(), "/ip/service/*1", map[string]string{"port": "22"}, nil)
+			},
 			want: http.MethodPatch,
 		},
 		{
@@ -213,10 +217,10 @@ func TestTypedReadersDecodeRouterOSPayloads(t *testing.T) {
 		io.WriteString(w, `{"name":"core-a"}`)
 	})
 	mux.HandleFunc("/rest/interface/vrrp", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `[{"id":"*1","name":"vrrp-lan","interface":"ether2","priority":"200","vrrp-state":"master"}]`)
+		io.WriteString(w, `[{".id":"*1","name":"vrrp-lan","interface":"ether2","priority":"200","vrrp-state":"master"}]`)
 	})
 	mux.HandleFunc("/rest/tool/netwatch", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `[{"id":"*1","host":"1.1.1.1","status":"up","comment":"mtha: probe"}]`)
+		io.WriteString(w, `[{".id":"*1","host":"1.1.1.1","status":"up","comment":"mtha: probe"}]`)
 	})
 
 	c, _ := newRestClient(t, mux)
@@ -245,6 +249,9 @@ func TestTypedReadersDecodeRouterOSPayloads(t *testing.T) {
 	if len(vrrp) != 1 || vrrp[0].State != "master" || vrrp[0].Priority != "200" {
 		t.Errorf("VRRP = %+v", vrrp)
 	}
+	if vrrp[0].ID != "*1" {
+		t.Errorf("VRRP[0].ID = %q, want *1 decoded from the \".id\" field", vrrp[0].ID)
+	}
 
 	nw, err := c.Netwatch(ctx)
 	if err != nil {
@@ -252,6 +259,9 @@ func TestTypedReadersDecodeRouterOSPayloads(t *testing.T) {
 	}
 	if len(nw) != 1 || nw[0].Host != "1.1.1.1" || nw[0].Status != "up" {
 		t.Errorf("Netwatch = %+v", nw)
+	}
+	if nw[0].ID != "*1" {
+		t.Errorf("Netwatch[0].ID = %q, want *1 decoded from the \".id\" field", nw[0].ID)
 	}
 }
 

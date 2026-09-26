@@ -95,19 +95,20 @@ func EntriesEqual(a, b Entry) (bool, []FieldChange) {
 	for k := range keys {
 		av, aok := a[k]
 		bv, bok := b[k]
+		as, bs := toComparable(av), toComparable(bv)
 
 		switch {
 		case aok && bok:
-			if toComparable(av) != toComparable(bv) {
-				changes = append(changes, FieldChange{Field: k, A: toComparable(av), B: toComparable(bv)})
+			if as != bs {
+				changes = append(changes, FieldChange{Field: k, A: as, B: bs})
 			}
 		case aok && !bok:
-			if !defaultLikeValues[toComparable(av)] {
-				changes = append(changes, FieldChange{Field: k, A: toComparable(av), B: ""})
+			if !defaultLikeValues[as] {
+				changes = append(changes, FieldChange{Field: k, A: as, B: ""})
 			}
 		case !aok && bok:
-			if !defaultLikeValues[toComparable(bv)] {
-				changes = append(changes, FieldChange{Field: k, A: "", B: toComparable(bv)})
+			if !defaultLikeValues[bs] {
+				changes = append(changes, FieldChange{Field: k, A: "", B: bs})
 			}
 		}
 	}

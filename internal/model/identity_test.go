@@ -51,6 +51,18 @@ func TestBuildIdentitiesDefaultUsesName(t *testing.T) {
 	}
 }
 
+func TestBuildIdentitiesAddressListUsesListAndAddress(t *testing.T) {
+	entries := []Entry{
+		{"list": "blocklist", "address": "10.0.0.5"},
+		{"list": "vpn-allowed", "address": "10.0.0.5"},
+	}
+	got := BuildIdentities("ip/firewall/address-list", entries)
+	want := []string{"blocklist|10.0.0.5", "vpn-allowed|10.0.0.5"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
 func TestBuildIdentitiesRoute(t *testing.T) {
 	entries := []Entry{
 		{"dst-address": "0.0.0.0/0", "gateway": "10.0.0.1"},

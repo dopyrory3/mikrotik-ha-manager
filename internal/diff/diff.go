@@ -37,44 +37,66 @@ func Compare(section string, aRaw, bRaw []model.Entry, exempt []string) SectionD
 	aIDs := model.BuildIdentities(section, aNorm)
 	bIDs := model.BuildIdentities(section, bNorm)
 
-	aByID := make(map[string]model.Entry, len(aNorm))
-	for i, id := range aIDs {
-		aByID[id] = aNorm[i]
-	}
-	bByID := make(map[string]model.Entry, len(bNorm))
-	for i, id := range bIDs {
-		bByID[id] = bNorm[i]
-	}
+	aByID := groupByIdentity(aIDs, aNorm)
+	bByID := groupByIdentity(bIDs, bNorm)
 
-	seen := make(map[string]bool, len(aIDs)+len(bIDs))
 	var hunks []Hunk
+	for _, id := range orderedIdentities(aIDs, bIDs) {
+		aGroup := aByID[id]
+		bGroup := bByID[id]
 
-	for _, id := range aIDs {
-		if seen[id] {
-			continue
+		// Two entries on the same router can legitimately share an
+		// identity (e.g. a missing per-section key falling back to a
+		// shared ordinal); pair them up by encounter order rather than
+		// letting one silently overwrite the other, so every entry is
+		// still diffed against something.
+		n := len(aGroup)
+		if len(bGroup) > n {
+			n = len(bGroup)
 		}
-		seen[id] = true
-
-		be, onB := bByID[id]
-		if !onB {
-			hunks = append(hunks, Hunk{Identity: id, OnA: true, OnB: false})
-			continue
+		for i := 0; i < n; i++ {
+			switch {
+			case i >= len(bGroup):
+				hunks = append(hunks, Hunk{Identity: id, OnA: true, OnB: false})
+			case i >= len(aGroup):
+				hunks = append(hunks, Hunk{Identity: id, OnA: false, OnB: true})
+			default:
+				equal, changes := model.EntriesEqual(aGroup[i], bGroup[i])
+				if !equal {
+					hunks = append(hunks, Hunk{Identity: id, OnA: true, OnB: true, Changes: changes})
+				}
+			}
 		}
-
-		equal, changes := model.EntriesEqual(aByID[id], be)
-		if equal {
-			continue
-		}
-		hunks = append(hunks, Hunk{Identity: id, OnA: true, OnB: true, Changes: changes})
-	}
-
-	for _, id := range bIDs {
-		if seen[id] {
-			continue
-		}
-		seen[id] = true
-		hunks = append(hunks, Hunk{Identity: id, OnA: false, OnB: true})
 	}
 
 	return SectionDiff{Section: section, Hunks: hunks}
+}
+
+func groupByIdentity(ids []string, entries []model.Entry) map[string][]model.Entry {
+	groups := make(map[string][]model.Entry, len(ids))
+	for i, id := range ids {
+		groups[id] = append(groups[id], entries[i])
+	}
+	return groups
+}
+
+// orderedIdentities returns the union of aIDs and bIDs, each id appearing
+// once, in first-seen order (A's order, then any B-only ids in B's order)
+// so hunk output stays deterministic.
+func orderedIdentities(aIDs, bIDs []string) []string {
+	seen := make(map[string]bool, len(aIDs)+len(bIDs))
+	order := make([]string, 0, len(aIDs)+len(bIDs))
+	for _, id := range aIDs {
+		if !seen[id] {
+			seen[id] = true
+			order = append(order, id)
+		}
+	}
+	for _, id := range bIDs {
+		if !seen[id] {
+			seen[id] = true
+			order = append(order, id)
+		}
+	}
+	return order
 }
