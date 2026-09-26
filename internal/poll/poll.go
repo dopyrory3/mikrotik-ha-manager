@@ -15,9 +15,8 @@ type RouterKey string
 
 // Snapshot is a point-in-time read of one router's status.
 type Snapshot struct {
-	Router    RouterKey
-	Reachable bool
-	Err       error
+	Router RouterKey
+	Err    error
 
 	Resource *routeros.SystemResource
 	Identity *routeros.Identity
@@ -34,6 +33,16 @@ type Snapshot struct {
 	NetwatchErr error
 
 	PolledAt time.Time
+}
+
+// Reachable reports whether the initial connectivity probe (system/resource)
+// succeeded. It's derived from Err rather than stored separately, since
+// poll() only ever sets one of the two. On a zero-value Snapshot (before the
+// first poll) this reports true, so callers must gate on "have we polled
+// yet" first (see poll.Poller's channel / ui.Model.snapshots) rather than
+// trusting Reachable alone.
+func (s Snapshot) Reachable() bool {
+	return s.Err == nil
 }
 
 // Poller periodically snapshots one router and sends the result on C.
@@ -82,7 +91,6 @@ func (p *Poller) poll(ctx context.Context) {
 		p.emit(snap)
 		return
 	}
-	snap.Reachable = true
 	snap.Resource = resource
 
 	var wg sync.WaitGroup

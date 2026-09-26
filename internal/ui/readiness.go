@@ -42,7 +42,7 @@ type Check struct {
 func evaluateReadiness(a, b poll.Snapshot, haveA, haveB bool, driftData map[string]diff.SectionDiff, driftErr error) (Verdict, []Check) {
 	checks := []Check{}
 
-	bothReachable := haveA && haveB && a.Reachable && b.Reachable
+	bothReachable := haveA && haveB && a.Reachable() && b.Reachable()
 	checks = append(checks, Check{
 		Label: "Both routers reachable",
 		OK:    bothReachable,
@@ -108,10 +108,10 @@ func reachabilityNote(a, b poll.Snapshot, haveA, haveB bool) string {
 	if !haveA || !haveB {
 		return "waiting for first poll"
 	}
-	if !a.Reachable {
+	if !a.Reachable() {
 		return "router a unreachable"
 	}
-	if !b.Reachable {
+	if !b.Reachable() {
 		return "router b unreachable"
 	}
 	return ""

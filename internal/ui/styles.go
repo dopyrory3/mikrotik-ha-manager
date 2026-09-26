@@ -26,3 +26,12 @@ var (
 			Background(colorMuted).
 			Padding(0, 1)
 )
+
+// cursorPrefix renders the two-column list-selection marker shared by every
+// cursor-navigable list on the drift screen.
+func cursorPrefix(active bool) string {
+	if active {
+		return "> "
+	}
+	return "  "
+}

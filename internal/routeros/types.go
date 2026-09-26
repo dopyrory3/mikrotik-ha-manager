@@ -40,10 +40,19 @@ type NetwatchEntry struct {
 	Disabled string `json:"disabled"`
 }
 
+// getInto GETs path into a zero-valued T, returning the zero value alongside
+// the error on failure so callers can pass it straight through (or turn it
+// into a nil pointer, for the pointer-returning readers below).
+func getInto[T any](ctx context.Context, c *Client, path string) (T, error) {
+	var v T
+	err := c.Get(ctx, path, &v)
+	return v, err
+}
+
 // SystemResource fetches the router's system resource summary.
 func (c *Client) SystemResource(ctx context.Context) (*SystemResource, error) {
-	var r SystemResource
-	if err := c.Get(ctx, "/system/resource", &r); err != nil {
+	r, err := getInto[SystemResource](ctx, c, "/system/resource")
+	if err != nil {
 		return nil, err
 	}
 	return &r, nil
@@ -51,8 +60,8 @@ func (c *Client) SystemResource(ctx context.Context) (*SystemResource, error) {
 
 // Identity fetches the router's system identity (hostname).
 func (c *Client) Identity(ctx context.Context) (*Identity, error) {
-	var id Identity
-	if err := c.Get(ctx, "/system/identity", &id); err != nil {
+	id, err := getInto[Identity](ctx, c, "/system/identity")
+	if err != nil {
 		return nil, err
 	}
 	return &id, nil
@@ -60,20 +69,12 @@ func (c *Client) Identity(ctx context.Context) (*Identity, error) {
 
 // VRRP fetches all configured VRRP instances.
 func (c *Client) VRRP(ctx context.Context) ([]VRRPInstance, error) {
-	var vs []VRRPInstance
-	if err := c.Get(ctx, "/interface/vrrp", &vs); err != nil {
-		return nil, err
-	}
-	return vs, nil
+	return getInto[[]VRRPInstance](ctx, c, "/interface/vrrp")
 }
 
 // Netwatch fetches all configured netwatch entries.
 func (c *Client) Netwatch(ctx context.Context) ([]NetwatchEntry, error) {
-	var ns []NetwatchEntry
-	if err := c.Get(ctx, "/tool/netwatch", &ns); err != nil {
-		return nil, err
-	}
-	return ns, nil
+	return getInto[[]NetwatchEntry](ctx, c, "/tool/netwatch")
 }
 
 // GetSection fetches a config section by its REST path (e.g.

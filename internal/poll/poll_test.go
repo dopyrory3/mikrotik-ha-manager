@@ -72,8 +72,8 @@ func TestPollEmitsReachableSnapshot(t *testing.T) {
 	if snap.Router != "a" {
 		t.Errorf("Router = %q, want a", snap.Router)
 	}
-	if !snap.Reachable || snap.Err != nil {
-		t.Fatalf("Reachable = %v, Err = %v; want reachable with no error", snap.Reachable, snap.Err)
+	if !snap.Reachable() || snap.Err != nil {
+		t.Fatalf("Reachable = %v, Err = %v; want reachable with no error", snap.Reachable(), snap.Err)
 	}
 	if snap.Resource == nil || snap.Resource.Version != "7.15.3" {
 		t.Errorf("Resource = %+v, want version 7.15.3", snap.Resource)
@@ -103,7 +103,7 @@ func TestPollMarksUnreachableOnConnectionFailure(t *testing.T) {
 	})
 	snap := New("a", client, time.Hour).pollOnce(context.Background())
 
-	if snap.Reachable {
+	if snap.Reachable() {
 		t.Error("Reachable = true for a dead router")
 	}
 	if snap.Err == nil {
@@ -124,8 +124,8 @@ func TestPollToleratesPartialEndpointFailure(t *testing.T) {
 
 	// /system/resource succeeded, so the router is reachable; a single
 	// failing sub-read must not fail the whole snapshot (see poll.poll).
-	if !snap.Reachable || snap.Err != nil {
-		t.Fatalf("Reachable = %v, Err = %v; want reachable, no error", snap.Reachable, snap.Err)
+	if !snap.Reachable() || snap.Err != nil {
+		t.Fatalf("Reachable = %v, Err = %v; want reachable, no error", snap.Reachable(), snap.Err)
 	}
 	if snap.Resource == nil {
 		t.Error("Resource = nil, want the successful system/resource read")

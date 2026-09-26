@@ -37,8 +37,6 @@ type Model struct {
 	cancel  context.CancelFunc
 
 	snapshots map[poll.RouterKey]poll.Snapshot
-	haveA     bool
-	haveB     bool
 
 	driftSections   []string
 	driftData       map[string]diff.SectionDiff
@@ -69,6 +67,14 @@ func New(pair *config.Pair, writeMode bool, pollers map[poll.RouterKey]*poll.Pol
 		snapshots:     make(map[poll.RouterKey]poll.Snapshot),
 		driftSections: driftSections,
 	}
+}
+
+// have reports whether a snapshot has been received yet for router, so
+// callers can tell "not polled yet" from a zero-value Snapshot without a
+// second bool tracked alongside the map.
+func (m Model) have(router poll.RouterKey) bool {
+	_, ok := m.snapshots[router]
+	return ok
 }
 
 func (m Model) Init() tea.Cmd {
@@ -106,11 +112,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case snapshotMsg:
 		snap := poll.Snapshot(msg)
 		m.snapshots[snap.Router] = snap
-		if snap.Router == "a" {
-			m.haveA = true
-		} else if snap.Router == "b" {
-			m.haveB = true
-		}
 		if p, ok := m.pollers[snap.Router]; ok {
 			return m, waitForSnapshot(p.Router, p.C)
 		}

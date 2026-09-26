@@ -16,12 +16,14 @@ func renderDashboard(m Model) string {
 	b.WriteString(styleTitle.Render(fmt.Sprintf("mtha — %s", m.pair.Name)))
 	b.WriteString("\n\n")
 
-	panelA := routerPanel("Router A", m.pair.Routers["a"], m.snapshots["a"], m.haveA)
-	panelB := routerPanel("Router B", m.pair.Routers["b"], m.snapshots["b"], m.haveB)
+	haveA, haveB := m.have("a"), m.have("b")
+
+	panelA := routerPanel("Router A", m.pair.Routers["a"], m.snapshots["a"], haveA)
+	panelB := routerPanel("Router B", m.pair.Routers["b"], m.snapshots["b"], haveB)
 	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, panelA, "  ", panelB))
 	b.WriteString("\n\n")
 
-	verdict, checks := evaluateReadiness(m.snapshots["a"], m.snapshots["b"], m.haveA, m.haveB, m.driftData, m.driftErr)
+	verdict, checks := evaluateReadiness(m.snapshots["a"], m.snapshots["b"], haveA, haveB, m.driftData, m.driftErr)
 	b.WriteString(renderVerdict(verdict, checks))
 	b.WriteString("\n\n")
 
@@ -42,7 +44,7 @@ func routerPanel(title string, router config.RouterConfig, snap poll.Snapshot, h
 		return stylePanel.Render(b.String())
 	}
 
-	if !snap.Reachable {
+	if !snap.Reachable() {
 		b.WriteString(styleDown.Render("unreachable"))
 		if snap.Err != nil {
 			b.WriteString("\n")

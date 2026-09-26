@@ -13,11 +13,10 @@ import (
 
 func snapshot(version, vrrpState, netwatchStatus string) poll.Snapshot {
 	return poll.Snapshot{
-		Reachable: true,
-		Resource:  &routeros.SystemResource{Version: version},
-		Identity:  &routeros.Identity{Name: "r"},
-		VRRP:      []routeros.VRRPInstance{{Name: "vrrp-lan", State: vrrpState}},
-		Netwatch:  []routeros.NetwatchEntry{{Host: "1.1.1.1", Status: netwatchStatus}},
+		Resource: &routeros.SystemResource{Version: version},
+		Identity: &routeros.Identity{Name: "r"},
+		VRRP:     []routeros.VRRPInstance{{Name: "vrrp-lan", State: vrrpState}},
+		Netwatch: []routeros.NetwatchEntry{{Host: "1.1.1.1", Status: netwatchStatus}},
 	}
 }
 
@@ -143,7 +142,7 @@ func TestReadinessNetwatchDown(t *testing.T) {
 }
 
 func TestReadinessUnreachableRouter(t *testing.T) {
-	down := poll.Snapshot{Reachable: false, Err: errFake{}}
+	down := poll.Snapshot{Err: errFake{}}
 
 	verdict, checks := evaluateReadiness(
 		down,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -40,35 +41,55 @@ func (m Model) startDriftFetch() (tea.Model, tea.Cmd) {
 	}
 }
 
-// fetchDrift fetches every configured, non-exempt section from both routers.
-// A section that fails to fetch is skipped rather than aborting the whole
-// run, so sections that did succeed are still returned alongside the first
-// error encountered.
+// fetchDrift fetches every configured, non-exempt section from both routers
+// concurrently. A section that fails to fetch is skipped rather than
+// aborting the whole run, so sections that did succeed are still returned
+// alongside the first error encountered (picked by configured section order,
+// not fetch completion order, so it stays deterministic).
 func fetchDrift(ctx context.Context, clientA, clientB *routeros.Client, sections, exempt []string) driftResultMsg {
-	data := make(map[string]diff.SectionDiff, len(sections))
-	var firstErr error
-
+	toFetch := make([]string, 0, len(sections))
 	for _, section := range sections {
-		if model.SectionExempt(section, exempt) {
-			continue
+		if !model.SectionExempt(section, exempt) {
+			toFetch = append(toFetch, section)
 		}
+	}
 
-		aEntries, err := clientA.GetSection(ctx, section)
-		if err != nil {
+	results := make([]struct {
+		diff diff.SectionDiff
+		err  error
+	}, len(toFetch))
+
+	var wg sync.WaitGroup
+	wg.Add(len(toFetch))
+	for i, section := range toFetch {
+		go func(i int, section string) {
+			defer wg.Done()
+
+			aEntries, err := clientA.GetSection(ctx, section)
+			if err != nil {
+				results[i].err = fmt.Errorf("fetch %s from router a: %w", section, err)
+				return
+			}
+			bEntries, err := clientB.GetSection(ctx, section)
+			if err != nil {
+				results[i].err = fmt.Errorf("fetch %s from router b: %w", section, err)
+				return
+			}
+			results[i].diff = diff.Compare(section, aEntries, bEntries, exempt)
+		}(i, section)
+	}
+	wg.Wait()
+
+	data := make(map[string]diff.SectionDiff, len(toFetch))
+	var firstErr error
+	for i, section := range toFetch {
+		if results[i].err != nil {
 			if firstErr == nil {
-				firstErr = fmt.Errorf("fetch %s from router a: %w", section, err)
+				firstErr = results[i].err
 			}
 			continue
 		}
-		bEntries, err := clientB.GetSection(ctx, section)
-		if err != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("fetch %s from router b: %w", section, err)
-			}
-			continue
-		}
-
-		data[section] = diff.Compare(section, aEntries, bEntries, exempt)
+		data[section] = results[i].diff
 	}
 
 	return driftResultMsg{data: data, err: firstErr}
@@ -159,10 +180,7 @@ func renderSectionList(m Model) string {
 
 	for i, section := range m.driftSections {
 		sd, ok := m.driftData[section]
-		cursor := "  "
-		if i == m.driftSection && !m.driftFocusHunks {
-			cursor = "> "
-		}
+		cursor := cursorPrefix(i == m.driftSection && !m.driftFocusHunks)
 
 		var status string
 		switch {
@@ -200,10 +218,7 @@ func renderHunkList(m Model) string {
 	}
 
 	for i, h := range sd.Hunks {
-		cursor := "  "
-		if i == m.driftHunk && m.driftFocusHunks {
-			cursor = "> "
-		}
+		cursor := cursorPrefix(i == m.driftHunk && m.driftFocusHunks)
 
 		switch {
 		case h.OnA && !h.OnB:
