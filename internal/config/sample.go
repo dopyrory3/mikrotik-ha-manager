@@ -22,7 +22,11 @@ pairs:
   - name: core
     routers:
       a: { host: 10.0.0.2, user: mtha, insecure_tls: false }
-      b: { host: 10.0.0.3, user: mtha }
+      # port is optional; set it if a router's REST API (www-ssl service)
+      # has been moved off the standard HTTPS port 443. This is unrelated
+      # to the legacy binary API service (ports 8728/8729), which mtha
+      # does not use.
+      b: { host: 10.0.0.3, port: 8443, user: mtha }
     vrrp:
       - interface: vrrp-lan
       - interface: vrrp-wan

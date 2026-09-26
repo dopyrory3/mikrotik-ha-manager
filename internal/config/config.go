@@ -12,7 +12,12 @@ import (
 
 // RouterConfig describes one router in a pair.
 type RouterConfig struct {
-	Host        string `yaml:"host"`
+	Host string `yaml:"host"`
+	// Port overrides the REST API (www-ssl) port; omit it to use the
+	// standard HTTPS port (443). This is for a relocated www-ssl service,
+	// not the legacy binary API (ports 8728/8729), which mtha does not
+	// speak — see project.md §6 (REST-only, no third-party client).
+	Port        int    `yaml:"port,omitempty"`
 	User        string `yaml:"user"`
 	InsecureTLS bool   `yaml:"insecure_tls"`
 }
@@ -80,6 +85,11 @@ func Load(path string) (*File, error) {
 		}
 		if _, ok := p.Routers["b"]; !ok {
 			return nil, fmt.Errorf("pair %q: missing router \"b\"", p.Name)
+		}
+		for key, router := range p.Routers {
+			if router.Port < 0 || router.Port > 65535 {
+				return nil, fmt.Errorf("pair %q router %q: invalid port %d", p.Name, key, router.Port)
+			}
 		}
 		_ = i
 	}

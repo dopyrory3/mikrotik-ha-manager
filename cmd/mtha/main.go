@@ -93,6 +93,7 @@ func buildPollers(pair *config.Pair) (map[poll.RouterKey]*poll.Poller, error) {
 
 		client := routeros.New(routeros.Config{
 			Host:        router.Host,
+			Port:        router.Port,
 			User:        router.User,
 			Password:    password,
 			InsecureTLS: router.InsecureTLS,

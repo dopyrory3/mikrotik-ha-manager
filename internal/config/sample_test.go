@@ -28,6 +28,9 @@ func TestWriteSampleParses(t *testing.T) {
 	if pair.Routers["a"].Host != "10.0.0.2" {
 		t.Errorf("router a host = %q, want 10.0.0.2", pair.Routers["a"].Host)
 	}
+	if pair.Routers["b"].Port != 8443 {
+		t.Errorf("router b port = %d, want 8443", pair.Routers["b"].Port)
+	}
 	if len(pair.Sync.Sections) == 0 {
 		t.Error("sample has no sync sections")
 	}

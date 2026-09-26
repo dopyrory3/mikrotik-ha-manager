@@ -62,7 +62,7 @@ pairs:
   - name: core
     routers:
       a: { host: 10.0.0.2, user: mtha, insecure_tls: false }
-      b: { host: 10.0.0.3, user: mtha }
+      b: { host: 10.0.0.3, port: 8443, user: mtha } # port optional, default 443
     vrrp:
       - interface: vrrp-lan
       - interface: vrrp-wan

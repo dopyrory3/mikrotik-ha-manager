@@ -10,7 +10,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -25,6 +27,11 @@ type Client struct {
 // Config configures a Client for one router.
 type Config struct {
 	Host        string
+	// Port overrides the REST API (www-ssl) port. Zero means the standard
+	// HTTPS port (443); set it when a router's www-ssl service has been
+	// moved to a non-standard port. It is unrelated to the legacy binary
+	// API service (ports 8728/8729), which this client does not speak.
+	Port        int
 	User        string
 	Password    string
 	InsecureTLS bool
@@ -43,8 +50,13 @@ func New(cfg Config) *Client {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // explicit per-router opt-in, see project.md §5.1
 	}
 
+	host := cfg.Host
+	if cfg.Port != 0 {
+		host = net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
+	}
+
 	return &Client{
-		baseURL:  fmt.Sprintf("https://%s/rest", cfg.Host),
+		baseURL:  fmt.Sprintf("https://%s/rest", host),
 		user:     cfg.User,
 		password: cfg.Password,
 		http: &http.Client{

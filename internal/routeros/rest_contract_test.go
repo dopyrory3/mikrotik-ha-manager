@@ -1,0 +1,281 @@
+package routeros
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// This file locks the REST contract (verb, path, auth, body, decoding,
+// error handling) against a fake router. It is separate from client_test.go,
+// which covers base-URL construction and the optional port.
+
+type recordedRequest struct {
+	Method      string
+	Path        string
+	User        string
+	Pass        string
+	AuthOK      bool
+	Body        string
+	Accept      string
+	ContentType string
+}
+
+type recorder struct {
+	mu   sync.Mutex
+	recs []recordedRequest
+}
+
+func (r *recorder) add(rec recordedRequest) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.recs = append(r.recs, rec)
+}
+
+func (r *recorder) last(t *testing.T) recordedRequest {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.recs) == 0 {
+		t.Fatal("no requests recorded")
+	}
+	return r.recs[len(r.recs)-1]
+}
+
+// newRestClient returns a Client pointed at an httptest server. It builds the
+// struct field-by-field because New hardcodes https://<host>[:port]/rest;
+// here we need the server's ephemeral http://127.0.0.1:<port>/rest base.
+func newRestClient(t *testing.T, handler http.Handler) (*Client, *recorder) {
+	t.Helper()
+
+	rec := &recorder{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		user, pass, ok := r.BasicAuth()
+		rec.add(recordedRequest{
+			Method:      r.Method,
+			Path:        r.URL.Path,
+			User:        user,
+			Pass:        pass,
+			AuthOK:      ok,
+			Body:        string(body),
+			Accept:      r.Header.Get("Accept"),
+			ContentType: r.Header.Get("Content-Type"),
+		})
+		handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := &Client{
+		baseURL:  srv.URL + "/rest",
+		user:     "mtha",
+		password: "s3cret",
+		http:     srv.Client(),
+	}
+	return c, rec
+}
+
+func TestNewBuildsBaseURLAndDefaultsTimeout(t *testing.T) {
+	c := New(Config{Host: "10.0.0.2", User: "mtha"})
+
+	if c.baseURL != "https://10.0.0.2/rest" {
+		t.Errorf("baseURL = %q, want https://10.0.0.2/rest", c.baseURL)
+	}
+	if c.http.Timeout != 10*time.Second {
+		t.Errorf("default timeout = %v, want 10s", c.http.Timeout)
+	}
+}
+
+func TestGetSendsBasicAuthAndDecodes(t *testing.T) {
+	c, rec := newRestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"name":"core-a"}`)
+	}))
+
+	var out Identity
+	if err := c.Get(context.Background(), "/system/identity", &out); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if out.Name != "core-a" {
+		t.Errorf("decoded name = %q, want core-a", out.Name)
+	}
+
+	got := rec.last(t)
+	if got.Method != http.MethodGet {
+		t.Errorf("method = %s, want GET", got.Method)
+	}
+	if got.Path != "/rest/system/identity" {
+		t.Errorf("path = %q, want /rest/system/identity", got.Path)
+	}
+	if !got.AuthOK || got.User != "mtha" || got.Pass != "s3cret" {
+		t.Errorf("auth = %q/%q ok=%v, want mtha/s3cret", got.User, got.Pass, got.AuthOK)
+	}
+	if got.Accept != "application/json" {
+		t.Errorf("Accept = %q, want application/json", got.Accept)
+	}
+}
+
+func TestWriteMethodsMapToRESTVerbs(t *testing.T) {
+	cases := []struct {
+		name string
+		call func(*Client) error
+		want string
+	}{
+		{
+			name: "Post creates via PUT",
+			call: func(c *Client) error { return c.Post(context.Background(), "/system/script", map[string]string{"name": "x"}, nil) },
+			want: http.MethodPut,
+		},
+		{
+			name: "Patch updates",
+			call: func(c *Client) error { return c.Patch(context.Background(), "/ip/service/*1", map[string]string{"port": "22"}, nil) },
+			want: http.MethodPatch,
+		},
+		{
+			name: "Delete removes",
+			call: func(c *Client) error { return c.Delete(context.Background(), "/system/script/*1") },
+			want: http.MethodDelete,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, rec := newRestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			if err := tc.call(c); err != nil {
+				t.Fatalf("call: %v", err)
+			}
+			if got := rec.last(t).Method; got != tc.want {
+				t.Errorf("method = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWriteSendsJSONBodyAndContentType(t *testing.T) {
+	c, rec := newRestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"ret":"*1"}`)
+	}))
+
+	if err := c.Post(context.Background(), "/ip/dns/static", map[string]string{"name": "host1", "address": "10.0.0.5"}, nil); err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+
+	got := rec.last(t)
+	if got.ContentType != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got.ContentType)
+	}
+	if got.Body != `{"address":"10.0.0.5","name":"host1"}` {
+		t.Errorf("body = %q", got.Body)
+	}
+}
+
+func TestGetWithoutBodyOmitsContentType(t *testing.T) {
+	c, rec := newRestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{}`)
+	}))
+
+	if err := c.Get(context.Background(), "/system/identity", &Identity{}); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if ct := rec.last(t).ContentType; ct != "" {
+		t.Errorf("Content-Type = %q, want empty on a GET", ct)
+	}
+}
+
+func TestErrorStatusIsReturnedWithCodeAndBody(t *testing.T) {
+	c, _ := newRestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"error":400,"message":"bad request"}`)
+	}))
+
+	err := c.Get(context.Background(), "/system/resource", nil)
+	if err == nil {
+		t.Fatal("expected an error for status 400")
+	}
+	if !strings.Contains(err.Error(), "400") || !strings.Contains(err.Error(), "bad request") {
+		t.Errorf("error %q should mention the status code and response body", err)
+	}
+}
+
+func TestTypedReadersDecodeRouterOSPayloads(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/system/resource", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"version":"7.15.3","board-name":"RB5009","uptime":"1d2h3m","cpu-load":"3","free-memory":"512000000","total-memory":"1073741824"}`)
+	})
+	mux.HandleFunc("/rest/system/identity", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"name":"core-a"}`)
+	})
+	mux.HandleFunc("/rest/interface/vrrp", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `[{"id":"*1","name":"vrrp-lan","interface":"ether2","priority":"200","vrrp-state":"master"}]`)
+	})
+	mux.HandleFunc("/rest/tool/netwatch", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `[{"id":"*1","host":"1.1.1.1","status":"up","comment":"mtha: probe"}]`)
+	})
+
+	c, _ := newRestClient(t, mux)
+	ctx := context.Background()
+
+	res, err := c.SystemResource(ctx)
+	if err != nil {
+		t.Fatalf("SystemResource: %v", err)
+	}
+	if res.Version != "7.15.3" || res.BoardName != "RB5009" || res.CPULoad != "3" {
+		t.Errorf("SystemResource = %+v", res)
+	}
+
+	id, err := c.Identity(ctx)
+	if err != nil {
+		t.Fatalf("Identity: %v", err)
+	}
+	if id.Name != "core-a" {
+		t.Errorf("Identity.Name = %q, want core-a", id.Name)
+	}
+
+	vrrp, err := c.VRRP(ctx)
+	if err != nil {
+		t.Fatalf("VRRP: %v", err)
+	}
+	if len(vrrp) != 1 || vrrp[0].State != "master" || vrrp[0].Priority != "200" {
+		t.Errorf("VRRP = %+v", vrrp)
+	}
+
+	nw, err := c.Netwatch(ctx)
+	if err != nil {
+		t.Fatalf("Netwatch: %v", err)
+	}
+	if len(nw) != 1 || nw[0].Host != "1.1.1.1" || nw[0].Status != "up" {
+		t.Errorf("Netwatch = %+v", nw)
+	}
+}
+
+func TestGetSectionReturnsRawEntries(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/ip/service", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `[{"name":"api","port":"443"},{".id":"*2","name":"ssh","port":"22","dynamic":"true"}]`)
+	})
+
+	c, rec := newRestClient(t, mux)
+
+	entries, err := c.GetSection(context.Background(), "ip/service")
+	if err != nil {
+		t.Fatalf("GetSection: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("got %d entries, want 2", len(entries))
+	}
+	// GetSection must return entries untouched; dropping .id/dynamic is the
+	// model package's job, not the client's.
+	if entries[0]["name"] != "api" || entries[1][".id"] != "*2" || entries[1]["dynamic"] != "true" {
+		t.Errorf("entries not returned raw: %+v", entries)
+	}
+	if got := rec.last(t).Path; got != "/rest/ip/service" {
+		t.Errorf("path = %q, want /rest/ip/service", got)
+	}
+}
