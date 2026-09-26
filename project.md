@@ -65,7 +65,13 @@ pairs:
       b: { host: 10.0.0.3, port: 8443, user: mtha } # port optional, default 443
     vrrp:
       - interface: vrrp-lan
+        on: ether2       # physical interface the VRRP interface rides on
+        vrid: 1
+        addresses: [10.0.0.1/24]   # VIP(s), assigned to the VRRP interface
       - interface: vrrp-wan
+        on: ether1
+        vrid: 2
+        addresses: [203.0.113.1/29]
     sync:
       sections:
         - ip/firewall/filter
@@ -84,6 +90,8 @@ pairs:
         - system/identity
         - interface/vrrp.priority
         - ip/address              # per-router interface addresses
+        - ip/service.certificate  # each router's own self-signed cert
+        - user.last-logged-in     # updates independently on every login
     runtime:
       netwatch_targets: [1.1.1.1, 8.8.8.8]
       priority_master: 200

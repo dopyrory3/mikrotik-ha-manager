@@ -10,6 +10,34 @@ import (
 	"mtha/internal/poll"
 )
 
+// panelGap is the literal spacer rendered between the two router panels.
+const panelGap = "  "
+
+// panelBorderWidth is the number of columns stylePanel's rounded border adds
+// on top of the width passed to Style.Width (one column per side).
+const panelBorderWidth = 2
+
+// minPanelWidth keeps panels usable even in a very narrow terminal, at the
+// cost of the pair no longer fitting side by side without wrapping.
+const minPanelWidth = 24
+
+// fallbackPanelWidth is used before the first tea.WindowSizeMsg arrives.
+const fallbackPanelWidth = 40
+
+// panelContentWidth returns the width to pass to stylePanel.Width so that
+// the two router panels plus the gap between them fit within termWidth.
+func panelContentWidth(termWidth int) int {
+	if termWidth <= 0 {
+		return fallbackPanelWidth
+	}
+	each := (termWidth - len(panelGap)) / 2
+	w := each - panelBorderWidth
+	if w < minPanelWidth {
+		w = minPanelWidth
+	}
+	return w
+}
+
 func renderDashboard(m Model) string {
 	var b strings.Builder
 
@@ -18,9 +46,10 @@ func renderDashboard(m Model) string {
 
 	haveA, haveB := m.have("a"), m.have("b")
 
-	panelA := routerPanel("Router A", m.pair.Routers["a"], m.snapshots["a"], haveA)
-	panelB := routerPanel("Router B", m.pair.Routers["b"], m.snapshots["b"], haveB)
-	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, panelA, "  ", panelB))
+	panelWidth := panelContentWidth(m.width)
+	panelA := routerPanel("Router A", m.pair.Routers["a"], m.snapshots["a"], haveA, panelWidth)
+	panelB := routerPanel("Router B", m.pair.Routers["b"], m.snapshots["b"], haveB, panelWidth)
+	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, panelA, panelGap, panelB))
 	b.WriteString("\n\n")
 
 	verdict, checks := evaluateReadiness(m.snapshots["a"], m.snapshots["b"], haveA, haveB, m.driftData, m.driftErr)
@@ -32,7 +61,9 @@ func renderDashboard(m Model) string {
 	return b.String()
 }
 
-func routerPanel(title string, router config.RouterConfig, snap poll.Snapshot, have bool) string {
+func routerPanel(title string, router config.RouterConfig, snap poll.Snapshot, have bool, width int) string {
+	panel := stylePanel.Width(width)
+
 	var b strings.Builder
 	b.WriteString(styleTitle.Render(title))
 	b.WriteString("\n")
@@ -41,7 +72,7 @@ func routerPanel(title string, router config.RouterConfig, snap poll.Snapshot, h
 
 	if !have {
 		b.WriteString(styleMuted.Render("waiting for first poll..."))
-		return stylePanel.Render(b.String())
+		return panel.Render(b.String())
 	}
 
 	if !snap.Reachable() {
@@ -50,7 +81,7 @@ func routerPanel(title string, router config.RouterConfig, snap poll.Snapshot, h
 			b.WriteString("\n")
 			b.WriteString(styleMuted.Render(snap.Err.Error()))
 		}
-		return stylePanel.Render(b.String())
+		return panel.Render(b.String())
 	}
 
 	b.WriteString(styleReady.Render("reachable"))
@@ -80,7 +111,7 @@ func routerPanel(title string, router config.RouterConfig, snap poll.Snapshot, h
 		fmt.Fprintf(&b, "vrrp %-12s %s\n", v.Interface, style.Render(state))
 	}
 
-	return stylePanel.Render(strings.TrimRight(b.String(), "\n"))
+	return panel.Render(strings.TrimRight(b.String(), "\n"))
 }
 
 func statusLine(m Model) string {

@@ -1,0 +1,241 @@
+# Configuration
+
+Everything `mtha` needs to know about a pair lives in one YAML file. The
+default location is:
+
+```
+~/.config/mtha/pairs.yaml
+```
+
+Override it with `-config <path>`. Run `mtha -init` to write a commented
+starter file to that location — that file is the most reliable reference,
+because it is generated from the same source the loader uses.
+
+**Credentials are never stored in this file.** They are read from the
+environment at run time (see [Credentials](#credentials)).
+
+## Full example
+
+```yaml
+pairs:
+  - name: core
+    routers:
+      a: { host: 10.0.0.2, user: mtha, insecure_tls: false }
+      b: { host: 10.0.0.3, port: 8443, user: mtha }
+    vrrp:
+      - interface: vrrp-lan
+        on: ether2
+        vrid: 1
+        addresses: [10.0.0.1/24]
+      - interface: vrrp-wan
+        on: ether1
+        vrid: 2
+        addresses: [203.0.113.1/29]
+    sync:
+      sections:
+        - ip/firewall/filter
+        - ip/firewall/nat
+        - ip/firewall/address-list
+        - ip/dhcp-server
+        - ip/dhcp-server/network
+        - ip/dhcp-server/lease   # static only
+        - ip/dns/static
+        - ip/route               # excluding per-router routes
+        - ip/service
+        - user
+        - system/script
+        - system/scheduler
+      exempt:
+        - system/identity
+        - interface/vrrp.priority
+        - ip/address             # per-router interface addresses
+        - ip/service.certificate # each router's own self-signed cert
+        - user.last-logged-in    # updates independently on every login
+    runtime:
+      netwatch_targets: [1.1.1.1, 8.8.8.8]
+      priority_master: 200
+      priority_backup: 100
+      priority_degraded: 50
+```
+
+## Top level
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `pairs` | list of pairs | A pair file with no pairs is an error |
+
+Multiple pairs may be defined. Until the pair-picker screen ships, a file
+with more than one pair requires `-pair <name>` on the command line; with
+exactly one pair the name is inferred.
+
+## Pair
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| `name` | yes | Used in the UI and in the credential environment variable name |
+| `routers` | yes | Must define both keys `a` and `b` — the loader rejects the pair otherwise |
+| `vrrp` | no | VRRP interfaces to track |
+| `sync` | no | Which sections to compare, and which to ignore |
+| `runtime` | no | Parameters for the VRRP interface and the netwatch/on-master/on-backup/scheduler automation the Runtime screen deploys |
+
+### Router
+
+```yaml
+routers:
+  a: { host: 10.0.0.2, user: mtha, insecure_tls: false }
+  b: { host: 10.0.0.3, port: 8443, user: mtha }
+```
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `host` | string | — | IP address or hostname of the router |
+| `port` | int | `443` | REST API (`www-ssl`) port. Set it only if that service has been moved off the standard HTTPS port. Must be 0–65535 |
+| `user` | string | — | RouterOS user for API auth |
+| `insecure_tls` | bool | `false` | Skip certificate verification for this router. Opt-in per router, for self-signed certificates — installing the router's CA is preferable |
+
+`port` is unrelated to the legacy binary API service on 8728/8729, which
+`mtha` does not speak.
+
+### VRRP
+
+```yaml
+vrrp:
+  - interface: vrrp-lan
+    on: ether2
+    vrid: 1
+    addresses: [10.0.0.1/24]
+  - interface: vrrp-wan
+    on: ether1
+    vrid: 2
+    addresses: [203.0.113.1/29]
+```
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| `interface` | yes | Name mtha gives the created VRRP interface; also how it's matched against what the routers report |
+| `on` | for deploy | Physical interface the VRRP interface rides on (same name on both routers) |
+| `vrid` | for deploy | VRRP virtual router ID |
+| `addresses` | for deploy | VIP(s), CIDR notation, assigned to the VRRP interface on both routers |
+
+Names the VRRP instances the pair should track. The dashboard lists the state
+of every instance the routers actually report, and readiness requires exactly
+one master per instance.
+
+`on`, `vrid` and `addresses` are only required once you use the **Runtime**
+screen (`3`) to provision the VRRP interface itself — the dashboard and drift
+screens work without them, for pairs that already have VRRP configured by
+hand. When runtime deploy creates the interface, router `a` starts at
+`runtime.priority_master` and router `b` at `runtime.priority_backup` — a
+fixed v1 convention, not something you choose per pair. Version, interval and
+preempt are fixed too (`3`, `1s`, `yes`) rather than exposed as config.
+
+### Sync
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `sections` | list of REST paths | Config sections compared for drift |
+| `exempt` | list of paths | Sections or individual fields excluded from comparison |
+
+A `sections` entry is a REST path relative to `/rest`, e.g.
+`ip/firewall/filter` for `GET /rest/ip/firewall/filter`. Sections are read
+structurally over REST; `mtha` never parses `/export` text.
+
+An `exempt` entry takes one of two forms:
+
+| Form | Effect |
+| --- | --- |
+| `system/identity` | The **whole section** is skipped — it is not fetched and not diffed |
+| `interface/vrrp.priority` | That **single field** is stripped from every entry of `interface/vrrp` before comparison |
+
+Both forms may be mixed in the same list, and a section may be exempt while
+still being relevant elsewhere (VRRP priority differs by design between
+master and backup, so it must be exempted from drift even though VRRP state
+is central to readiness).
+
+Two field exemptions are worth adding to almost every pair, since they are
+per-router state rather than config and will otherwise show up as permanent,
+unresolvable drift: `ip/service.certificate` (each router holds its own
+self-signed certificate for `www-ssl` unless you've deliberately installed a
+shared one) and `user.last-logged-in` (updates independently every time
+either router is logged into).
+
+### Runtime
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `netwatch_targets` | list of addresses | Targets the deployed netwatch entries probe |
+| `priority_master` | int | VRRP priority a healthy master holds |
+| `priority_backup` | int | VRRP priority a healthy standby holds |
+| `priority_degraded` | int | Priority the up/down scripts drop a router to when its targets are unreachable |
+
+`priority_master`/`priority_backup` set the initial VRRP priority for routers
+`a`/`b` when the Runtime screen provisions a VRRP interface; `priority_degraded`
+and `netwatch_targets` parameterize the netwatch up/down scripts deployed
+alongside it (see [Runtime screen](usage.md#runtime)).
+
+## Credentials
+
+One environment variable per router:
+
+```
+MTHA_<PAIR>_<ROUTER>_PASSWORD
+```
+
+`<PAIR>` and `<ROUTER>` are upper-cased. For pair `core`, router `a`:
+
+```sh
+export MTHA_CORE_A_PASSWORD=...
+export MTHA_CORE_B_PASSWORD=...
+```
+
+The environment is the only source: there is no credential field in the pair
+file, and no keychain integration yet. If the variable is unset or empty,
+`mtha` refuses to start and names the variable it wanted.
+
+Storing these in a shell profile, a secrets manager, or a keychain-injected
+environment is all fine. Because there is nowhere in the pair file to put
+them, the file stays safe to commit or share.
+
+## How drift is computed
+
+This matters when tuning `sync`, because the comparison is deliberately not a
+literal config diff.
+
+**Dropped before comparison:**
+
+- the router-assigned `.id` field
+- any entry marked `dynamic: true`
+- any field named in `exempt` as `<section>.<field>`
+
+**Treated as equal:**
+
+- a field absent on one router and present with a default-ish value on the
+  other (`""`, `false`, `no`, `none`, `0`). RouterOS omits fields left at
+  their default rather than writing them explicitly, so this prevents
+  constant false positives.
+
+**Entries are matched across the two routers by identity**, per section:
+
+| Section | Identity |
+| --- | --- |
+| any | the `comment` field, if present and non-empty |
+| `ip/firewall/filter`, `nat`, `mangle`, `raw` | `chain` plus an ordinal within that chain |
+| `ip/firewall/address-list` | `list` + `address` |
+| `ip/dns/static` | `address` |
+| `ip/route` | `dst-address` → `gateway` |
+| anything else | `name`, else `address`, else a bare ordinal |
+
+Practical consequences:
+
+- **Commenting your rules is the single highest-value habit here.** A
+  commented rule is matched reliably; an uncommented firewall rule falls back
+  to chain plus position, so inserting a rule near the top shifts every
+  ordinal below it and shows up as a cascade of false diffs.
+- Two entries on one router that resolve to the same identity are paired by
+  encounter order rather than one overwriting the other.
+- Section order in the drift output follows your `sections` list, and hunks
+  follow router A's order, so results are stable between runs.
+
+`mtha` reports *what* differs. Which side is the source of truth for a given
+hunk is a decision made at apply time, not by the diff engine — and apply is
+milestone 3.

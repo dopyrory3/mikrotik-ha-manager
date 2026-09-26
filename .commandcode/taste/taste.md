@@ -5,6 +5,7 @@
 
 ## Workflow
 - Values automated regression/unit testing as a guard against feature drift over time — wants the ability to verify behavior stays stable as development continues. Confidence: 0.55
+- Wants user-facing documentation written for a tool as part of building it, and when the format is open (man page vs markdown vs site) expects a single recommended option with reasoning rather than a survey of alternatives. Confidence: 0.5
 
 ## Tooling
 - Wants projects to ship a sample/example config generator (scaffolding) so a starter config can be produced easily, rather than having to hand-write it. Confidence: 0.55

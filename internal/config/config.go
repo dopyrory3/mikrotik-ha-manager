@@ -22,9 +22,19 @@ type RouterConfig struct {
 	InsecureTLS bool   `yaml:"insecure_tls"`
 }
 
-// VRRPInstance is a VRRP interface the pair should track.
+// VRRPInstance is a VRRP interface the pair should track, and — once "on",
+// "vrid" and "addresses" are set — that mtha's runtime deployment (milestone
+// 4, project.md §5.5) provisions on both routers.
 type VRRPInstance struct {
-	Interface string `yaml:"interface"`
+	Interface string `yaml:"interface"` // name mtha gives the created VRRP interface
+	// On is the physical interface the VRRP interface rides on (same name
+	// on both routers). Required only for runtime deploy/verify, not for
+	// tracking an already-existing instance on the dashboard/drift screens.
+	On   string `yaml:"on,omitempty"`
+	VRID int    `yaml:"vrid,omitempty"`
+	// Addresses are the VIP(s), in CIDR notation, assigned to the VRRP
+	// interface on both routers.
+	Addresses []string `yaml:"addresses,omitempty"`
 }
 
 // SyncConfig lists which config sections are kept in sync and which paths
