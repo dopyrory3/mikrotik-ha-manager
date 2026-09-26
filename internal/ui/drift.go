@@ -164,7 +164,7 @@ func renderDrift(m Model) string {
 	}
 
 	b.WriteString("\n\n")
-	b.WriteString(styleStatusBar.Render(fmt.Sprintf(" %s | drift | r: refresh, enter: hunks, esc: back, tab: overview, q: quit ", m.pair.Name)))
+	b.WriteString(styleStatusBar.Render(fmt.Sprintf(" %s | drift | r: refresh, enter: hunks, esc: back, tab: runtime, q: quit ", m.pair.Name)))
 	return b.String()
 }
 

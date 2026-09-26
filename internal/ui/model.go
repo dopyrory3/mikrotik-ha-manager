@@ -1,6 +1,6 @@
 // Package ui holds the Bubble Tea root model and per-screen views.
-// Milestones 1-2 ship the Overview and Drift screens (project.md §9); Apply,
-// Runtime, Failover and Events from §7.1 land in later milestones.
+// Milestones 1-2-4 ship the Overview, Drift and Runtime screens (project.md
+// §9); Apply, Failover and Events from §7.1 land in later milestones.
 package ui
 
 import (
@@ -13,6 +13,7 @@ import (
 	"mtha/internal/diff"
 	"mtha/internal/model"
 	"mtha/internal/poll"
+	"mtha/internal/runtime"
 )
 
 // snapshotMsg carries a freshly polled snapshot from one of the pollers.
@@ -24,7 +25,24 @@ type screenID int
 const (
 	screenOverview screenID = iota
 	screenDrift
+	screenRuntime
 )
+
+// runtimeActionKind identifies which of the Runtime screen's two write
+// actions a pending confirmation belongs to.
+type runtimeActionKind int
+
+const (
+	runtimeActionDeploy runtimeActionKind = iota
+	runtimeActionRemove
+)
+
+// pendingRuntimeAction holds a computed plan awaiting a second keypress to
+// confirm before it runs (project.md §7.3: every write is shown before
+// execution). nil on Model means no confirmation is pending.
+type pendingRuntimeAction struct {
+	kind runtimeActionKind
+}
 
 // Model is the root Bubble Tea model.
 type Model struct {
@@ -45,6 +63,13 @@ type Model struct {
 	driftSection    int
 	driftHunk       int
 	driftFocusHunks bool
+
+	runtimePlans    map[string]runtime.Plan
+	runtimePlanErr  error
+	runtimeStatus   runtime.Status
+	runtimeFetching bool
+	runtimeErr      error
+	runtimePending  *pendingRuntimeAction
 
 	width, height int
 	quitting      bool
@@ -123,6 +148,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.driftData = msg.data
 		return m, nil
 
+	case runtimeVerifyMsg:
+		m.runtimeFetching = false
+		m.runtimeErr = msg.err
+		m.runtimeStatus = msg.status
+		return m, nil
+
+	case runtimeActionMsg:
+		m.runtimeFetching = false
+		m.runtimeErr = msg.result.Err
+		m.runtimeStatus = msg.result.Status
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
@@ -149,16 +186,26 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "2":
 		return m.enterDriftScreen()
 
+	case "3":
+		return m.enterRuntimeScreen()
+
 	case "tab":
-		if m.screen == screenOverview {
+		switch m.screen {
+		case screenOverview:
 			return m.enterDriftScreen()
+		case screenDrift:
+			return m.enterRuntimeScreen()
+		default:
+			m.screen = screenOverview
+			return m, nil
 		}
-		m.screen = screenOverview
-		return m, nil
 	}
 
-	if m.screen == screenDrift {
+	switch m.screen {
+	case screenDrift:
 		return m.handleDriftKey(msg)
+	case screenRuntime:
+		return m.handleRuntimeKey(msg)
 	}
 	return m, nil
 }
@@ -178,6 +225,8 @@ func (m Model) View() string {
 	switch m.screen {
 	case screenDrift:
 		return renderDrift(m)
+	case screenRuntime:
+		return renderRuntime(m)
 	default:
 		return renderDashboard(m)
 	}

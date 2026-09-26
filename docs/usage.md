@@ -27,9 +27,10 @@ Errors go to stderr prefixed with `mtha:` and the process exits non-zero —
 including a missing config file, an unparseable one, a pair that is missing
 router `a` or `b`, and an unset credential variable.
 
-`-write` is accepted today but no write operations exist yet; the mode is
-shown in the status bar as `read-only` or `write`. The apply, deploy and
-failover screens that use it arrive in later milestones.
+`-write` gates the Runtime screen's deploy/remove actions, shown in the status
+bar as `read-only` or `write`; without it you can still preview what deploy or
+remove would do, just not confirm it. Apply and failover, which will use it
+too, arrive in later milestones.
 
 ## Screens
 
@@ -87,6 +88,36 @@ Changing a rule's comment — or inserting an uncommented firewall rule near the
 top of a chain — can shift identities and produce diffs that look larger than
 the underlying change.
 
+### Runtime
+
+Press `3` (or `tab` from Drift) to open it. Like Drift, the first entry
+verifies immediately; after that, press `r` to refresh.
+
+Runtime provisions the VRRP interface(s) a pair's `vrrp` entries describe
+(once they have `on`/`vrid`/`addresses` set — see
+[configuration.md](configuration.md#vrrp)), plus the netwatch entries,
+on-master/on-backup scripts and periodic snapshot scheduler job project.md
+§5.5 describes. Every object it manages is tagged (`mtha:...` as a comment,
+or a leading `# mtha:...` comment line inside a script body) so it can be
+found again and cleanly removed, and so a hand-written on-master/on-backup
+script is never silently overwritten — that shows as `conflict` instead.
+
+The screen lists, per router, every object it manages and its state:
+
+| State | Meaning |
+| --- | --- |
+| `missing` | Not present on that router yet |
+| `mismatched` | Present, but one or more fields differ from the desired config |
+| `ok` | Present and matching |
+| `conflict` | A guarded field (on-master/on-backup) already holds a non-mtha value; deploy won't overwrite it |
+
+`d` (deploy) and `x` (remove) both show a confirmation listing exactly what
+will run before anything happens — visible even without `-write`, so you can
+preview it read-only. Confirming (`y`) only actually writes with `-write` set;
+without it you'll see `read-only — restart with -write to actually run this`.
+Removing flags any VRRP interface deletion on a router currently holding VRRP
+master with a `‼`, since it can drop a live VIP.
+
 ## Keybindings
 
 Global, on any screen:
@@ -95,7 +126,8 @@ Global, on any screen:
 | --- | --- |
 | `1` | Overview |
 | `2` | Drift |
-| `tab` | Toggle between Overview and Drift |
+| `3` | Runtime |
+| `tab` | Cycle Overview → Drift → Runtime → Overview |
 | `q`, `ctrl+c` | Quit |
 
 Drift screen:
@@ -107,6 +139,16 @@ Drift screen:
 | `esc` | Move the cursor back to the section list |
 | `up`, `k` | Move up |
 | `down`, `j` | Move down |
+
+Runtime screen:
+
+| Key | Action |
+| --- | --- |
+| `r` | Re-verify runtime status |
+| `d` | Show a deploy confirmation |
+| `x` | Show a remove confirmation |
+| `y` | Confirm the pending deploy/remove (requires `-write`) |
+| `n`, `esc` | Cancel the pending confirmation |
 
 There is no in-app help overlay yet (`?` is not wired up); this document is
 the keybinding reference.
@@ -122,7 +164,7 @@ failing ones with a note. Before the first poll, the verdict is `Unknown`.
 | RouterOS versions match | The `version` strings are identical |
 | No unresolved drift in synced sections | Drift has been fetched and every section is clean |
 | Exactly one master per VRRP instance | For each VRRP instance seen on either router, exactly one side reports `master` |
-| Runtime logic present and identical on both routers | Never, in this build |
+| Runtime logic present and identical on both routers | Runtime has been verified and every managed object is `ok` on both routers |
 | Standby netwatch targets up | Every netwatch entry on both routers reports status `up` |
 
 Two of these behave in ways worth knowing:
@@ -131,11 +173,9 @@ Two of these behave in ways worth knowing:
   drift check fails with the note `press 2 to check drift`, which holds the
   verdict at `Degraded` on an otherwise healthy pair. Open Drift once to
   satisfy it.
-- **The runtime-logic check is hard-coded to fail** until milestone 4, with
-  the note `runtime deployment not yet implemented`. This is deliberate: the
-  verdict refuses to claim `Ready` when one of its criteria cannot actually be
-  evaluated yet. So in the current build, the best possible verdict is
-  `Degraded` with that single reason, even on a perfectly healthy pair.
+- **Runtime is not verified automatically either**, the same way. Until you
+  open the Runtime screen, this check fails with `press 3 to check runtime`.
+  Once verified, its note names the first non-`ok` item if any remain.
 
 The "standby netwatch targets up" check currently inspects netwatch entries on
 *both* routers rather than only the standby.

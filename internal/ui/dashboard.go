@@ -52,7 +52,7 @@ func renderDashboard(m Model) string {
 	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, panelA, panelGap, panelB))
 	b.WriteString("\n\n")
 
-	verdict, checks := evaluateReadiness(m.snapshots["a"], m.snapshots["b"], haveA, haveB, m.driftData, m.driftErr)
+	verdict, checks := evaluateReadiness(m.snapshots["a"], m.snapshots["b"], haveA, haveB, m.driftData, m.driftErr, m.runtimeStatus, m.runtimeErr)
 	b.WriteString(renderVerdict(verdict, checks))
 	b.WriteString("\n\n")
 
@@ -108,7 +108,7 @@ func routerPanel(title string, router config.RouterConfig, snap poll.Snapshot, h
 		case "backup":
 			style = styleDegraded
 		}
-		fmt.Fprintf(&b, "vrrp %-12s %s\n", v.Interface, style.Render(state))
+		fmt.Fprintf(&b, "vrrp %-12s %s\n", vrrpInstanceKey(v), style.Render(state))
 	}
 
 	return panel.Render(strings.TrimRight(b.String(), "\n"))
@@ -119,7 +119,7 @@ func statusLine(m Model) string {
 	if m.writeMode {
 		mode = "write"
 	}
-	return fmt.Sprintf(" %s | %s | 2: drift, q: quit ", m.pair.Name, mode)
+	return fmt.Sprintf(" %s | %s | 2: drift, 3: runtime, q: quit ", m.pair.Name, mode)
 }
 
 func renderVerdict(v Verdict, checks []Check) string {
