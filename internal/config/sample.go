@@ -1,0 +1,70 @@
+package config
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+)
+
+// SampleYAML is a commented starter pair file matching the shape documented
+// in project.md §5.1. Credentials are deliberately absent: they are resolved
+// from MTHA_<PAIR>_<ROUTER>_PASSWORD, never from this file.
+const SampleYAML = `# mtha pair file. Default location: ~/.config/mtha/pairs.yaml
+#
+# Credentials are never stored here. Set one environment variable per router,
+# named MTHA_<PAIR>_<ROUTER>_PASSWORD with both parts upper-cased, e.g. for
+# pair "core" below:
+#
+#   export MTHA_CORE_A_PASSWORD=...
+#   export MTHA_CORE_B_PASSWORD=...
+
+pairs:
+  - name: core
+    routers:
+      a: { host: 10.0.0.2, user: mtha, insecure_tls: false }
+      b: { host: 10.0.0.3, user: mtha }
+    vrrp:
+      - interface: vrrp-lan
+      - interface: vrrp-wan
+    sync:
+      sections:
+        - ip/firewall/filter
+        - ip/firewall/nat
+        - ip/firewall/address-list
+        - ip/dhcp-server
+        - ip/dhcp-server/network
+        - ip/dhcp-server/lease   # static only
+        - ip/dns/static
+        - ip/route               # excluding per-router routes
+        - ip/service
+        - user
+        - system/script
+        - system/scheduler
+      exempt:
+        - system/identity
+        - interface/vrrp.priority
+        - ip/address             # per-router interface addresses
+    runtime:
+      netwatch_targets: [1.1.1.1, 8.8.8.8]
+      priority_master: 200
+      priority_backup: 100
+      priority_degraded: 50
+`
+
+// WriteSample writes the sample pair file to path, creating parent
+// directories as needed. It refuses to overwrite an existing file.
+func WriteSample(path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("refusing to overwrite existing file %s", path)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(SampleYAML), 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}

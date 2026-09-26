@@ -28,6 +28,7 @@ func run() error {
 		configPath string
 		pairName   string
 		write      bool
+		initConfig bool
 	)
 
 	defaultPath, err := config.DefaultPath()
@@ -38,7 +39,17 @@ func run() error {
 	flag.StringVar(&configPath, "config", defaultPath, "path to pair config file")
 	flag.StringVar(&pairName, "pair", "", "pair name (required if the config defines more than one)")
 	flag.BoolVar(&write, "write", false, "allow write operations (sync, deploy, failover); default is read-only")
+	flag.BoolVar(&initConfig, "init", false, "write a commented sample pair file to -config and exit")
 	flag.Parse()
+
+	if initConfig {
+		if err := config.WriteSample(configPath); err != nil {
+			return err
+		}
+		fmt.Printf("wrote sample config to %s\n", configPath)
+		fmt.Println("set MTHA_<PAIR>_<ROUTER>_PASSWORD for each router before running (e.g. MTHA_CORE_A_PASSWORD)")
+		return nil
+	}
 
 	file, err := config.Load(configPath)
 	if err != nil {
