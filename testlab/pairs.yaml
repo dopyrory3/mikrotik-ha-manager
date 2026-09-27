@@ -21,11 +21,19 @@ pairs:
       # ip/firewall/filter first: the smoke test drives the drift screen
       # to it without moving the section cursor.
       sections:
+        # Every section provision.sh's fixture populates, so the whole read
+        # path runs against real entries; the pair is drift-free in each at
+        # baseline.
         - ip/firewall/filter
         - ip/firewall/nat
         - ip/firewall/address-list
+        - ip/dhcp-server
+        - ip/dhcp-server/network
+        - ip/dhcp-server/lease   # static only
         - ip/dns/static
+        - ip/route               # only routes commented "mtha:..."
         - ip/service
+        - user
         - system/script
         - system/scheduler
       exempt:
