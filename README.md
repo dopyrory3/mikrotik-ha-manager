@@ -36,12 +36,21 @@ binary API on ports 8728/8729.
 
 ## Install
 
+Download the archive for your platform from the
+[GitHub Releases](https://github.com/dopyrory3/mikrotik-ha-manager/releases)
+page (Linux amd64/arm64, macOS arm64, Windows amd64), check it against
+`checksums.txt`, and put `mtha` on your `PATH`. `mtha -version` shows the
+release it was built from.
+
+To build from source:
+
 ```sh
 git clone <repo> && cd mikrotik-ha-manager
-go build ./cmd/mtha        # or: make build
+make build                 # go build, stamped with the version from git describe
 ```
 
-This produces an `mtha` binary in the current directory. The build is a
+This produces an `mtha` binary in the current directory. A plain
+`go build ./cmd/mtha` works too, but reports its version as `dev`. The build is a
 static binary with no runtime dependencies; cross-compiling is a plain
 `GOOS`/`GOARCH` pair.
 
@@ -110,8 +119,8 @@ See [docs/usage.md](docs/usage.md) for screens and keybindings, and
 | 6. Events | Log merge, timeline | Done |
 | 7. Polish | In-app help | Done |
 
-A pair file may define several pairs; select one with `-pair <name>`. Builds
-are plain `go build`.
+A pair file may define several pairs; select one with `-pair <name>`.
+Releases are built by GoReleaser from `v*` tags (see [Releasing](#releasing)).
 
 ## Documentation
 
@@ -157,7 +166,7 @@ make check     # vet + tests with the race detector — the pre-commit gate
 make test      # go test ./...
 make vet       # go vet ./...
 make cover     # coverage summary
-make build     # go build ./cmd/mtha
+make build     # go build ./cmd/mtha, stamped with git describe
 ```
 
 CI runs `go mod verify`, `go vet ./...` and `go test -race ./...` on every
@@ -169,3 +178,18 @@ planner (`internal/plan`) are the critical units; changes there should come
 with test cases. The planner's dry-run output is pinned by golden files in
 `internal/plan/testdata` — after an intentional change, regenerate them with
 `go test ./internal/plan -update` and review the diff.
+
+## Releasing
+
+Push a `v*` tag to publish a release:
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+`.github/workflows/release.yml` runs the test workflow first, then
+GoReleaser (`.goreleaser.yaml`) builds the four platform binaries, stamps
+them with the tag, and attaches the archives and `checksums.txt` to a GitHub
+Release. Ordinary pushes only run the test workflow. To check the release
+config locally without publishing: `goreleaser release --snapshot --clean`
+(output in `dist/`).

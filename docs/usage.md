@@ -12,6 +12,7 @@ mtha [flags]
 | `-pair` | inferred | Pair name. Required when the config defines more than one pair |
 | `-write` | `false` | Allow write operations. The session is read-only without it |
 | `-init` | `false` | Write a commented sample pair file to `-config` and exit |
+| `-version` | `false` | Print the mtha version (the release tag it was built from) and exit |
 
 With `-init`, nothing else runs: the sample is written, the credential
 variables to set are printed, and the process exits. It refuses to overwrite
@@ -339,5 +340,5 @@ The "standby netwatch targets up" check currently inspects netwatch entries on
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Quit normally, or `-init` succeeded |
+| `0` | Quit normally, or `-init` / `-version` succeeded |
 | `1` | Startup or runtime error, printed to stderr as `mtha: <error>` |

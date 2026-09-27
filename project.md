@@ -232,7 +232,7 @@ Data flow: `poll` goroutines emit `SnapshotMsg` per router → root model update
 | Credentials   | env vars; `zalando/go-keyring` optional       | Never in pair file                                           |
 | Router API    | RouterOS 7 REST (`/rest/...`)                 | Basic auth over HTTPS; no third-party client                 |
 | Diff display  | `sergi/go-diff` or hand-rolled                | Only for changed-field rendering                             |
-| Build         | `go build`                        | Plain `GOOS`/`GOARCH` cross-compile; GoReleaser dropped (§10.1)                              |
+| Build         | GoReleaser                                    | Tagged releases: static binaries per §6 platform, archives, checksums (§10.1) |
 | Testing       | stdlib `testing` + golden files               | Normalisation and planner are the critical units             |
 
 
@@ -244,7 +244,7 @@ Data flow: `poll` goroutines emit `SnapshotMsg` per router → root model update
 4. **Runtime** — templates, deploy, verify, remove. Done — extended beyond the original §5.5 scope to also provision the VRRP interface(s) and VIP(s) themselves (`interface/vrrp`, `ip/address`), not only the automation layered on top of one.
 5. **Failover** — pre-flight, action, live view, VIP probe. Not started.
 6. **Events** — log merge, timeline. Done.
-7. **Polish** — in-app help (`?`). Multi-pair and the release pipeline are dropped (§10.1). Done.
+7. **Polish** — in-app help (`?`). Multi-pair is dropped (§10.1). Done. The release pipeline was dropped here and later reinstated (§10.1).
 
 Milestones 1–2 deliver value on their own and de-risk the hardest part (normalisation). Milestone 3's write path (`internal/plan`: a visible plan, explicit confirmation, master double-confirm, stop-on-first-failure execution, post-write verification) is the foundation milestone 5 builds on.
 
@@ -260,7 +260,8 @@ Milestones 1–2 deliver value on their own and de-risk the hardest part (normal
 - **Netwatch priority is per router (milestone 4).** A netwatch down-script drops the router's mtha-managed VRRP interfaces (comment `mtha:vrrp:…`) to `priority_degraded`; its up-script restores that router's own base priority — `priority_master` on A, `priority_backup` on B, so the standby is never promoted — and only when no enabled `mtha:netwatch:` entry on the router is down. VRRP priority is therefore runtime state: Runtime sets it only when creating the interface, never patches it on an existing one, and verifies it as either the base or the degraded value. This refines §5.5's "`priority_master` ↔ `priority_degraded`".
 - **A VRRP VIP is an `/ip/address` entry, not a vrrp parameter (verified on 7.23.7).** `/interface/vrrp` has no `address` parameter — sending one fails with HTTP 400 `unknown parameter address`. The VIP is an `/ip/address` bound to the vrrp interface, which is what `runtime.Writes` plans.
 - **Multi-pair is dropped.** One pair per session. A pair file may still define several pairs, selected with `-pair`; the Pairs screen (§7.1) and pair list (§4) will not be built.
-- **The GoReleaser release pipeline is dropped.** Binaries are built with `go build` (plain `GOOS`/`GOARCH` cross-compilation, §6); §8's GoReleaser entry is superseded.
+- **Releases are built by GoReleaser on a `v*` tag.** This reverses an earlier decision to drop the pipeline. `.github/workflows/release.yml` runs the test workflow (the `make check` gate plus `go mod verify`) and, only if it passes, GoReleaser (`.goreleaser.yaml`), which attaches to a GitHub Release the four §6 binaries (`CGO_ENABLED=0`, stripped with `-s -w`), packed as `.tar.gz` archives, `.zip` for Windows, plus `checksums.txt` and a changelog. Ordinary pushes run only the test workflow.
+- **Binaries identify themselves.** `main.version` defaults to `dev` and is set at build time with `-ldflags "-X main.version=…"`: the tag for releases, `git describe` for `make build`. `mtha -version` prints it; a `go install …@<tag>` build falls back to the module version Go records.
 - **Apply plan semantics (milestone 3).**
   - Operations are shown with the HTTP verb actually sent. RouterOS REST maps add → `PUT`, set → `PATCH`, remove → `DELETE`, and every other command (backup, unset) → `POST`; §5.4's "POST" for creates means this `PUT`.
   - The pre-apply `/system/backup/save` is itself an operation in the plan — it is a write, so it is shown like one — and is the first op for every router the plan writes to.
