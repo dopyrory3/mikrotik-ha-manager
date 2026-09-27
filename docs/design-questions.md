@@ -2,8 +2,16 @@
 
 The three questions listed as open in `project.md` §10.2, each worked
 through to a decision someone can make: the evidence, the real options, the
-cost and risk of each, and a recommendation. **Nothing here is decided or
-implemented.** Decisions belong in `project.md` §10.1 once made.
+cost and risk of each, and a recommendation. Decisions belong in
+`project.md` §10.1 once made.
+
+**Lab results, 2026-09-28.** The five [Needs the lab](#needs-the-lab) probes
+have been run. Their answers are in the contract's
+[Write probes](lab-rest-contract.md#write-probes-design-questions), and the
+recommendations below are corrected where an answer changed them (marked
+*Lab:*). Since this page was written, Q1's option B, Q2's detection and
+Q3's warning pass have been implemented. The contract's contradiction 16
+lists where that code now lags the findings.
 
 Evidence comes from two places only: the code at the commit this page was
 written against, and `docs/lab-rest-contract.md` (the REST survey of the two
@@ -24,9 +32,9 @@ ip/dns/static, ip/route, ip/service, user, system/script, system/scheduler
 
 | # | Question | Recommendation | Lab needed before building? |
 |---|---|---|---|
-| 1 | Custom identity rules | Keep comment-first **only** where there is no natural key (firewall rules, tagged routes). Everywhere else identify by the natural key and treat `comment` as an ordinary compared field. Specifically: `ip/dns/static` gets `name\|type\|value`, which removes its bare ordinal. | Partly: non-`A`/`CNAME` DNS record shapes, and which natural keys RouterOS enforces as unique. The change itself can be built and unit-tested now. |
-| 2 | Rule order drift | **Detect it now**, per chain, over rules present on both routers; show it as one order hunk per chain. **Plan `move` later**, after the lab confirms the REST `move` call. Until then an order hunk is shown but skipped with a reason. | Detection: no. Planning `move`: yes. |
-| 3 | Cross-section dependencies | **A warning, not a reorder.** A small static table of reference fields, checked at plan time against the target (plus objects created earlier in the same plan); a missing referent becomes a dry-run warning. No dependency graph. | To decide which references are hard (rejected) vs soft (accepted, inert): yes. The warning itself does not depend on it. |
+| 1 | Custom identity rules | Keep comment-first **only** where there is no natural key (firewall rules, tagged routes). Everywhere else identify by the natural key and treat `comment` as an ordinary compared field. Specifically: `ip/dns/static` gets `name\|type\|value`, which removes its bare ordinal. *Lab:* the value is known for every type (a per-type field list), and a regexp record keys on `regexp`. | *Answered.* Every DNS type's value fields are known. RouterOS refuses duplicate **enabled** natural keys in every section asked about, so occurrence pairing is only reached through disabled duplicates. `ip/service` has no `comment`. |
+| 2 | Rule order drift | **Detect it now**, per chain, over rules present on both routers; show it as one order hunk per chain. **Plan `move`** with `POST .../move {"numbers","destination"}`. *Lab:* this is no longer blocked. | *Answered.* The body is known, and a moved rule keeps its `.id`. An unknown `destination` silently moves the rule to the end of the table, which the planner must guard against. |
+| 3 | Cross-section dependencies | **Check, not reorder.** A small static table of reference fields, checked at plan time against the target (plus objects created earlier in the same plan). No dependency graph. *Lab:* a missing **hard** referent should be a refusal (skip with a reason); only **soft** ones stay warnings. Deletes need their own check, because RouterOS lets a referent be deleted and leaves the referrer dangling. | *Answered.* Pool, interface, interface list, lease server, user group and routing table are hard; address list, jump target and scheduler script are soft. Deleting a DHCP server or pool under a referrer is allowed, and the referrer is left holding a dead `.id`. |
 
 ---
 
@@ -63,9 +71,9 @@ name").
 | `ip/dhcp-server` | `name` | `name` | comment | Stable, but a comment edit is delete + create. |
 | `ip/dhcp-server/network` | `address` (a network cannot be disabled; no `name`) | `address` | comment | As above. |
 | `ip/dhcp-server/lease` (static) | `server` + `mac-address` (the reservation is for a client) | `address` | comment | As above; `address` makes a re-addressed reservation a delete + create. |
-| `ip/dns/static` | `name` + `type` + value (`address` for `A`, `cname` for `CNAME`); one name may have several records | `address`, else **bare ordinal** | comment | **No.** Any non-`A` record is positional. |
+| `ip/dns/static` | `name` (or `regexp`) + `type` + value; the value fields per type are in the contract (probe 1); one name may have several records | `address`, else **bare ordinal** | comment | **No.** Any non-`A` record is positional. |
 | `ip/route` (tagged only) | the `mtha:` tag comment is the opt-in (§10.1) | `dst->gw` (never reached: `Select` drops untagged routes) | comment | **Yes, settled.** |
-| `ip/service` | `name` (built-in rows; dynamic rows are dropped by `Select`) | `name` | comment | Stable while uncommented. The contract lists no `comment` field for this section, so whether one can arise is unknown. |
+| `ip/service` | `name` (built-in rows; dynamic rows are dropped by `Select`) | `name` | comment | **Stable.** *Lab:* a comment cannot arise: `comment` is `400 "unknown parameter comment"` and is never returned. |
 | `user` | `name` | `name` | comment | Stable, but a comment edit is **destructive on sync** (below). |
 | `system/script` | `name` | `name` | comment | Stable, but a comment edit is delete + create. |
 | `system/scheduler` | `name` | `name` | comment | As above. |
@@ -128,8 +136,8 @@ Per section:
 | `ip/firewall/address-list` | `list\|address`, always |
 | `ip/dhcp-server`, `ip/service`, `user`, `system/script`, `system/scheduler` | `name`, always |
 | `ip/dhcp-server/network` | `address`, always |
-| `ip/dhcp-server/lease` | `server\|mac-address`, falling back to `address` if `mac-address` is empty |
-| `ip/dns/static` | `name\|type\|<value>`, where value is `address` for `A` and `cname` for `CNAME` (the two types surveyed); `name\|type` for any type whose value field is not yet known (collisions then pair by occurrence, as today) |
+| `ip/dhcp-server/lease` | `server\|mac-address`, falling back to `address` if `mac-address` is empty. *Lab:* read an absent `server` as `all`, since that is how RouterOS returns it |
+| `ip/dns/static` | `name\|type\|<value>`. *Lab:* the value per type is `address` (`A`, `AAAA`), `cname` (`CNAME`), `mx-preference`+`mx-exchange` (`MX`), `srv-priority`+`srv-weight`+`srv-port`+`srv-target` (`SRV`), `text` (`TXT`), `ns` (`NS`), `forward-to` (`FWD`), and empty for `NXDOMAIN`. Use `regexp` in place of `name` for a regexp record, which has no `name`. This matches the key RouterOS enforces as unique among enabled records for every type tested (all but `NS`, whose duplicate was not tried), so the `name\|type` fallback is only needed for a type not listed here |
 | any other section | unchanged fallback, but comment should be **last** before the ordinal, not first |
 
 Notes:
@@ -150,11 +158,23 @@ Notes:
   distinct, and the two DNS records sharing a comment have different
   addresses.
 
-Needs the lab: the value fields of DNS types other than `A` and `CNAME`
-(the contract did not survey them), and whether RouterOS enforces
-uniqueness of `list+address`, a network's `address` and a lease's
-`server+mac-address` (it only matters for how often the occurrence pairing
-is exercised, not for correctness).
+*Lab (probes 1-3).* The DNS value fields are now known for every type
+(table above). RouterOS refuses a second **enabled** entry with the same
+`list+address`, network `address`, lease `server+mac-address` (with `all`
+clashing with every server), or DNS `name+type+value`. It also refuses a
+second static lease with the same `address` on any server. So the
+occurrence pairing is only exercised when a duplicate is **disabled**,
+which RouterOS allows in every one of these sections except networks. That
+is rare, and it is still handled correctly. `ip/service` takes no
+`comment`, so the one open cell in the section table is closed.
+
+One finding strengthens the case for B. Under comment-first identity, a
+changed comment on a DHCP server is planned as a delete plus a create of a
+server with the same name. RouterOS lets the delete go through with static
+leases still naming the server, and leaves those leases pointing at the
+dead server's `.id` (`server:"*1"`). **Re-creating the server does not
+re-link them.** Name-keyed identity turns that comment change into a
+`PATCH`, which avoids this.
 
 ---
 
@@ -212,8 +232,26 @@ positive either way. That is not evidence of absence on a real pair.
 ### Planning a `move`, and how it meets `place-before`
 
 RouterOS has a `move` command (the plan's own doc lists it among the POST
-commands, `plan.go:96`); the contract did not survey its REST body or
-whether a moved rule keeps its `.id`.
+commands, `plan.go:96`).
+
+*Lab (probe 4).* The call is
+`POST /rest/ip/firewall/<table>/move {"numbers":"<.id>","destination":"<.id>"}`,
+which answers `200 []` and places `numbers` immediately before
+`destination`. **The moved rule keeps its `.id`.** `numbers` can list
+several `.id`s, which move as a block in the order given. `place-before`
+cannot be `PATCH`ed, so `move` is the only way to reorder. Three sharp
+edges matter to the planner:
+
+- **An unknown `destination` is not an error.** It answers `200 []` and
+  moves the rule to the end of the whole table, just like omitting
+  `destination`. A stale anchor `.id` therefore produces a wrong order,
+  not a failure. The anchor must be an `.id` read from the target for this
+  plan, and the post-apply drift re-read is what catches a race.
+- **A bare number is a position, not an ID.** `"0"` in either field means
+  the table's first rule. `.id`s always carry `*`, so always send them
+  exactly as read.
+- A comment string in `numbers` resolves to the first rule carrying it.
+  Never send one.
 
 Order of operations within a firewall section would become **deletes,
 updates, moves, creates**:
@@ -228,8 +266,9 @@ updates, moves, creates**:
   cannot know: it is pure, and the IDs only exist after the `PUT`.
 - Each move can be planned like a create: move rule X before the next
   same-chain source rule that is already in order on the target, applied in
-  source order. The `.id` of that anchor is known at plan time, provided a
-  move preserves `.id` (lab).
+  source order. The `.id` of that anchor is known at plan time, and a move
+  preserves `.id` (*Lab:* confirmed), so later moves can still anchor on a
+  rule that has already moved.
 
 Risks:
 
@@ -252,10 +291,11 @@ tool must not have: it is a false negative, and a failover is exactly when
 the standby's policy starts to matter. Detection is pure code with no
 device risk.
 
-Planning the move: **yes, but second**, and only after the lab confirms the
-REST call. Until then, an order finding is shown and, if selected, skipped
-with a reason ("reorder this chain by hand; move is not implemented"), the
-same way unsafe hunks are skipped today. Delete-and-recreate is not an
+Planning the move: **yes, but second.** *Lab:* the REST call is confirmed
+(above), so nothing blocks building it now. Until it is built, an order
+finding is shown and, if selected, skipped with a reason ("reorder this
+chain by hand; move is not implemented"), the same way unsafe hunks are
+skipped today. Delete-and-recreate is not an
 acceptable stand-in: it leaves a window with the rule missing, resets its
 counters and changes its `.id`.
 
@@ -279,14 +319,14 @@ exist.
 | Referrer field | Refers to | In the sync list? | Behaviour when missing |
 |---|---|---|---|
 | firewall `src-address-list`, `dst-address-list` | `ip/firewall/address-list` `list` | yes, after `filter`/`nat` | **Accepted.** `testlab/provision.sh` adds the filter rule using `lab-trusted` before any `lab-trusted` entry exists, the script stops on any non-2xx, and `internal/labtest` finds all 11 rules. The rule is inert until the list fills. |
-| firewall `in-interface`, `out-interface` | `interface` | no (per-router hardware) | not surveyed |
-| firewall `jump-target` | a chain in the same section | same section | not surveyed |
-| `ip/dhcp-server` `address-pool` | `ip/pool` `name` | **no** | not surveyed |
-| `ip/dhcp-server` `interface` | `interface` | no | not surveyed |
-| `ip/dhcp-server/lease` `server` | `ip/dhcp-server` `name` | yes, before `lease` | not surveyed (the fixture always adds the server first) |
-| `ip/route` `gateway` (when an interface name), `routing-table` | `interface`, routing tables | no | not surveyed |
-| `user` `group` | `user/group` | **no** | not surveyed |
-| `system/scheduler` `on-event` | `system/script` `name` (or inline source) | yes, after `script` | **Accepted.** The fixture adds `lab-daily` with `on-event` naming the script before the script exists. It would fail when it runs. |
+| firewall `in-interface`, `out-interface` | `interface` | no (per-router hardware) | **Rejected** (*Lab:* `400 "input does not match any value of interface"`); `in-interface-list` likewise |
+| firewall `jump-target` | a chain in the same section | same section | **Accepted** (*Lab*) |
+| `ip/dhcp-server` `address-pool` | `ip/pool` `name` | **no** | **Rejected** on create (*Lab*). Deleting the pool later is allowed, and leaves `address-pool:"*1"` |
+| `ip/dhcp-server` `interface` | `interface` | no | **Rejected** (*Lab*) |
+| `ip/dhcp-server/lease` `server` | `ip/dhcp-server` `name` | yes, before `lease` | **Rejected** on create (*Lab*); `all` is accepted. Deleting the server later is allowed, and leaves `server:"*1"` |
+| `ip/route` `gateway` (when an interface name), `routing-table` | `interface`, routing tables | no | **Rejected**, both (*Lab*) |
+| `user` `group` | `user/group` | **no** | **Rejected** (*Lab*). Deleting a group with members is refused |
+| `system/scheduler` `on-event` | `system/script` `name` (or inline source) | yes, after `script` | **Accepted.** The fixture adds `lab-daily` with `on-event` naming the script before the script exists. It would fail when it runs. *Lab:* deleting the script leaves `on-event` as it was |
 | `ip/service` `certificate` | certificates | no (and exempt in the sample) | not surveyed |
 
 `ip/dhcp-server/network` and `ip/dns/static` refer to addresses and names,
@@ -303,8 +343,12 @@ What this shows:
   place.
 - For **deletes**, the order is the reverse of safe: a DHCP server's
   deletes run (section 4) before its leases' (section 6), and a script's
-  before its scheduler's. What RouterOS does when a lease's server
-  disappears is not surveyed.
+  before its scheduler's. *Lab:* RouterOS lets the server go and leaves
+  each lease holding the dead server's `.id` (`server:"*1"`). Re-creating
+  a same-named server does not repair them. When the plan deletes the
+  leases as well, their deletes (by `.id`) still run afterwards, so the
+  order costs nothing. The damage is to leases the plan **keeps**, and no
+  ordering fixes that.
 - The **real exposure is outside the sync list**: `ip/pool`, `user/group`,
   interfaces and routing tables are referenced but never synced. A DHCP
   server copied to a router that lacks its pool is the issue's own example,
@@ -321,7 +365,9 @@ What this shows:
   time, for each create or `PATCH` body that sets one, check the referent
   exists on the target, or is created earlier in the same plan. If not, add
   a warning to the dry run (a new `Plan.Warnings`, not a `Skip`, since the
-  device may well accept it). Referenced sections outside the sync list
+  device may well accept it). *Lab:* for most fields it will not. A
+  missing hard referent is a certain 400, so the "warning" describes an op
+  that will stop the apply partway, after the ops before it have run. Referenced sections outside the sync list
   (`ip/pool`, `user/group`, `interface`) need one extra read-only GET each
   at plan time, only when a body refers to them. Cost: a table, a lookup
   and the extra reads. Risk: none to the device.
@@ -335,15 +381,31 @@ What this shows:
   `scheduler` before `script`). Cheap, and it covers the create-order half
   of C for free.
 
-### Recommendation: B, plus D
+### Recommendation: B, split by hardness, plus a delete check, plus D
 
-A warning is the minimal guard that is actually useful: it catches the
-unsynced-referent and half-selection cases, which are the real ones, and
-ordering cannot. D stops a pair file from breaking create order. Hold C
-back until the lab shows a delete-order case that RouterOS rejects or
-leaves broken (a lease whose server was deleted first). If it does, the
-narrow form of C, deletes in reverse section order, is the fix, and it is
-small.
+*Lab (probe 5) changes B.* The check stays, but what it produces depends on
+the reference:
+
+- **Hard references become refusals.** A create or `PATCH` naming a
+  missing pool, interface, interface list, lease server, user group or
+  routing table (or a gateway naming a missing interface) is skipped with a
+  reason, like an unsafe hunk. RouterOS would refuse it with a 400 anyway.
+  Refusing it at plan time keeps the rest of the plan from running up to
+  it and stopping there.
+- **Soft references stay warnings**: address lists, jump targets (still
+  left out of the table, for the reason in `references.go`) and scheduler
+  scripts. The device accepts these and the object sits inert.
+- **Add a delete-side check.** Warn when the plan deletes a DHCP server or
+  pool that an entry staying on the target still names. RouterOS allows
+  the delete and leaves that entry holding a dead `.id` for good. A
+  refusal would be too strong here, since the operator may mean to follow
+  up by hand.
+
+D stops a pair file from breaking create order. **Drop C**: the lab found
+the broken delete case the recommendation was waiting for, and it is not
+an ordering problem. RouterOS neither rejects the delete nor cascades it,
+and running lease deletes first changes nothing for leases the plan keeps.
+The delete-side check above is the guard for it.
 
 Independently of this decision: listing `ip/firewall/address-list` before
 `filter`/`nat` in the sample would close the fail-open window above. That
@@ -355,24 +417,34 @@ smoke test depends on it).
 
 ## Needs the lab
 
-None of these can be settled from the code or the contract. All are
-read-only or undone by the harness's golden restore.
+All five were run on 2026-09-28. The device's responses are in the
+contract under [Write probes](lab-rest-contract.md#write-probes-design-questions).
+In short:
 
-1. **DNS static record shapes** for types other than `A` and `CNAME`
-   (`AAAA`, `MX`, `TXT`, `SRV`, `FWD`, `NXDOMAIN`): which field holds the
-   value. (Q1)
-2. **Uniqueness RouterOS enforces** on `list+address`, a DHCP network's
-   `address`, a lease's `server+mac-address`, and duplicate DNS
-   `name+type+address`. (Q1)
-3. **Whether `ip/service` accepts and returns `comment`.** (Q1)
-4. **REST `move`**: the body `POST /rest/ip/firewall/filter/move` takes
-   (`numbers`, `destination`?), and whether the moved rule keeps its `.id`.
-   (Q2)
-5. **Hard or soft references**: create a DHCP server with an unknown
-   `address-pool`, a lease with an unknown `server` (and whether `all` is a
-   value), a user with an unknown `group`, a route with an unknown
-   `routing-table`, a firewall rule with an unknown `in-interface`; and
-   delete a DHCP server that a static lease still names. (Q3)
+1. **DNS static record shapes** for types other than `A` and `CNAME`.
+   *Answered:* `AAAA` uses `address`, `MX` `mx-exchange`+`mx-preference`,
+   `SRV` `srv-target`+`srv-port`+`srv-priority`+`srv-weight`, `TXT` `text`,
+   `FWD` `forward-to`, `NS` `ns`, and `NXDOMAIN` has no value. Regexp
+   records have `regexp` instead of `name`. (Q1: **changes** the DNS key:
+   full value table, `regexp` as the name.)
+2. **Uniqueness RouterOS enforces.** *Answered:* all four are refused as
+   duplicates among **enabled** entries, and a disabled duplicate is
+   allowed. A lease's `address` is unique across servers too. (Q1: no
+   change to the recommendation; the occurrence pairing is only reached
+   through disabled duplicates.)
+3. **Whether `ip/service` accepts and returns `comment`.** *Answered:* no,
+   `400 "unknown parameter comment"`, never returned. (Q1: no change; the
+   open cell is closed.)
+4. **REST `move`.** *Answered:* `{"numbers":"<.id>[,...]","destination":"<.id>"}`,
+   `200 []`, and `.id` is kept. An unknown `destination` silently moves the
+   rule to the end of the table. (Q2: **changes** "plan `move` later" to
+   unblocked, and adds the stale-anchor hazard.)
+5. **Hard or soft references.** *Answered:* pool, interface, interface
+   list, lease server, group and routing table are hard (400); `all` is a
+   valid lease server; jump target, address list and scheduler script are
+   soft. Deleting a DHCP server under its leases is allowed, and they are
+   left on a dead `.id`. (Q3: **changes** warnings to refusals for hard
+   references, adds a delete-side check, and drops C.)
 
 ## Tests added with this page
 
