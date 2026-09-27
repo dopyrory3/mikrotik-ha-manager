@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"mtha/internal/config"
+	"mtha/internal/events"
 	"mtha/internal/plan"
 	"mtha/internal/poll"
 	"mtha/internal/routeros"
@@ -362,6 +363,49 @@ func TestApplyRefusesToDeleteTargetAPIUser(t *testing.T) {
 	if !m.apply.plan.Empty() || len(m.apply.plan.Skipped) != 1 || !strings.Contains(m.apply.plan.Skipped[0].Reason, "lock mtha out") {
 		t.Fatalf("want the delete skipped as a lockout:\n%s", m.apply.plan.Render())
 	}
+}
+
+// A finished apply is journalled for the Events timeline: one sync action
+// per target router, with its op count, whether it succeeded or stopped.
+func TestApplyIsRecordedOnTimeline(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		m, _, _ := applyFixture(t, true, "backup")
+		m = drive(t, m, key("4"))
+		m = drive(t, m, key("y"))
+
+		got := m.journal.Actions()
+		if len(got) != 1 {
+			t.Fatalf("actions = %+v, want one", got)
+		}
+		a := got[0]
+		if a.Kind != events.ActionSync || a.Target != "b" || a.Summary != "apply ip/firewall/filter: 2/2 ops" || a.Err != nil {
+			t.Errorf("action = %+v", a)
+		}
+	})
+
+	t.Run("stopped", func(t *testing.T) {
+		m, _, rb := applyFixture(t, true, "backup")
+		rb.failPath = "/system/backup/save"
+		m = drive(t, m, key("4"))
+		m = drive(t, m, key("y"))
+
+		got := m.journal.Actions()
+		if len(got) != 1 || got[0].Summary != "apply ip/firewall/filter: 0/2 ops" || got[0].Err == nil {
+			t.Fatalf("actions = %+v, want one failed sync action", got)
+		}
+		if tl := m.timeline(); len(tl) != 1 || !tl[0].Failed || tl[0].Kind != string(events.ActionSync) {
+			t.Errorf("timeline = %+v", tl)
+		}
+	})
+
+	t.Run("not confirmed", func(t *testing.T) {
+		m, _, _ := applyFixture(t, false, "backup")
+		m = drive(t, m, key("4"))
+		m = drive(t, m, key("y"))
+		if got := m.journal.Actions(); len(got) != 0 {
+			t.Errorf("actions = %+v, want none for a plan that never ran", got)
+		}
+	})
 }
 
 func TestApplyWithoutSelectionExplainsHowToSelect(t *testing.T) {

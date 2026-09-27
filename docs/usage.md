@@ -189,9 +189,10 @@ Events is a single timeline, newest first, merging:
   `vrrp` or `netwatch` topic, and entries whose message starts with `mtha:`
   (written by the on-master/on-backup scripts Runtime deploys).
 - **The tool's own actions** from this session, shown with source `tool`.
-  Today that is Runtime deploy/remove. The Apply screen's operations are not
-  fed into the journal yet, and failover actions will follow once that
-  milestone lands. A failed action's kind is shown in red with its error
+  Today that is each finished apply (one `sync` row per router it wrote to,
+  e.g. `→ B: apply ip/firewall/filter: 3/3 ops`, recorded whether it
+  succeeded or stopped) and Runtime deploy/remove. Failover actions will
+  follow once that milestone lands. A failed action's kind is shown in red with its error
   appended.
 
 | Column | Meaning |

@@ -253,6 +253,9 @@ func (m Model) handleApplyMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.apply.stage = applyDone
 		m.apply.residual = msg.result.data
 		m.apply.verifyErr = msg.result.err
+		for _, a := range applyActionEvents(m.apply) {
+			m.journal.Record(a)
+		}
 		// Fold the fresh drift into the Drift screen and readiness, and
 		// drop selections the apply resolved.
 		if m.driftData == nil {

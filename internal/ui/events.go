@@ -104,6 +104,43 @@ func runtimeActionEvent(msg runtimeActionMsg) events.Action {
 	return events.Action{Kind: events.ActionRuntime, Summary: summary, Err: msg.result.Err}
 }
 
+// applyActionEvents describes a finished apply for the Events timeline
+// (project.md §5.7): one action per target router, naming the sections
+// written and how many of that router's ops ran. A router whose ops did not
+// all run — the one that failed, or one the run stopped before reaching —
+// carries the run's error.
+func applyActionEvents(a applyState) []events.Action {
+	var out []events.Action
+	for _, target := range a.plan.Targets() {
+		var sections []string
+		seen := map[string]bool{}
+		total, done := 0, 0
+		for i, op := range a.plan.Ops {
+			if op.Router != target {
+				continue
+			}
+			total++
+			if i < len(a.status) && a.status[i] == opDone {
+				done++
+			}
+			if op.Section != "" && !seen[op.Section] {
+				seen[op.Section] = true
+				sections = append(sections, op.Section)
+			}
+		}
+		action := events.Action{
+			Kind:    events.ActionSync,
+			Target:  target,
+			Summary: fmt.Sprintf("apply %s: %d/%d ops", strings.Join(sections, ","), done, total),
+		}
+		if done < total {
+			action.Err = a.err
+		}
+		out = append(out, action)
+	}
+	return out
+}
+
 // timeline merges both routers' logs and the session's tool actions, oldest
 // first (project.md §5.7).
 func (m Model) timeline() []events.Event {

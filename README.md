@@ -20,7 +20,7 @@ deploying, verifying, syncing and rehearsing.
 > Overview, Drift, Runtime
 > (VRRP interface provisioning, netwatch/on-master/on-backup/scheduler
 > automation), Apply (selective sync with dry run, backup and verification),
-> and Events (merged router log and Runtime-action timeline). Milestone 5
+> and Events (merged router log and apply/Runtime-action timeline). Milestone 5
 > (planned failover) has not started. See [Status](#status) below.
 
 ## Requirements
