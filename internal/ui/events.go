@@ -213,7 +213,7 @@ func renderEvents(m Model) string {
 	}
 
 	b.WriteString("\n\n")
-	b.WriteString(styleStatusBar.Render(fmt.Sprintf(" %s | events | r: refresh, j/k: scroll, g/G: newest/oldest, q: quit ", m.pair.Name)))
+	b.WriteString(styleStatusBar.Render(statusLine(m, "r: refresh, j/k: scroll, g/G: newest/oldest")))
 	return b.String()
 }
 
