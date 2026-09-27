@@ -3,3 +3,4 @@
 /mtha
 *.rsc
 .DS_Store
+.commandcode/
