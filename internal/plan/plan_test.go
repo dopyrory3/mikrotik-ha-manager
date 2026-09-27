@@ -245,3 +245,19 @@ func TestBuildHonoursExempt(t *testing.T) {
 		t.Errorf("exempt field copied into create body: %v", p.Ops[1].Body)
 	}
 }
+
+func TestBuildNeverWritesVRRPRoleFlags(t *testing.T) {
+	a := []model.Entry{{".id": "*1", "name": "vrrp-lan", "interface": "ether2", "vrid": "1", "master": "true"}}
+	b := []model.Entry{}
+	p := Build([]SectionInput{{
+		Section: "interface/vrrp", A: a, B: b, Choices: choose(AtoB, "vrrp-lan"),
+	}}, Options{})
+	if len(p.Ops) != 2 {
+		t.Fatalf("expected backup + create, got:\n%s", p.Render())
+	}
+	for _, flag := range []string{"master", "backup"} {
+		if _, ok := p.Ops[1].Body[flag]; ok {
+			t.Errorf("role flag %q copied into create body: %v", flag, p.Ops[1].Body)
+		}
+	}
+}

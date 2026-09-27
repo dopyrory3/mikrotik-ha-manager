@@ -288,18 +288,13 @@ assumes and what the device actually does.
      so `""` vs `"none"` on `certificate` is reported as drift even though
      both mean unset.
 
-5. **`interface/vrrp` in `sync.sections` would drift forever.**
-   - Code: `internal/model/normalize.go` (`sectionStateFields` has no
-     `interface/vrrp` entry).
-   - `commonStateFields` strips `running` and `invalid`, but not `master`,
-     `backup` or `mac-address`.
-   - Between a healthy pair, `master` is only on A and `backup` only on B,
-     so the diff shows both as changes. An A→B sync would then `PATCH
-     master=true` onto B. RouterOS will presumably reject that as a
-     read-only property; that is not verified here.
-   - `docs/configuration.md` shows `interface/vrrp.priority` as an exempt
-     field, which implies the section is expected to be syncable. It
-     isn't, until `master`/`backup` are stripped.
+5. **`interface/vrrp` has device-reported state fields.**
+   - Normalisation strips `master`, `backup` and `mac-address` through
+     `sectionStateFields`; the common state rule already strips `running`
+     and `invalid`. The role flags otherwise differ permanently across a
+     healthy pair and could enter a write body. The remaining returned
+     fields are settable configuration, with `priority` handled by the
+     existing per-pair exemption.
 
 6. **`.id` has three shapes, not two.**
    - Code: nothing in the code keys on `.id`, which is correct, but
