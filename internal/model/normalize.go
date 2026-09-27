@@ -1,6 +1,9 @@
 package model
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // SectionExempt reports whether a whole section is exempt from drift/sync,
 // i.e. exempt contains the bare section path (not a "<section>.<field>"
@@ -14,24 +17,88 @@ func SectionExempt(section string, exempt []string) bool {
 	return false
 }
 
-// Normalize drops fields and entries that must never be compared between
-// routers: the router-assigned ".id", dynamic entries, and any field listed
-// as exempt for this section in the pair's sync.exempt list (project.md
-// §5.1, §5.3). Field-level exemptions are written "<section>.<field>";
-// which form applies to a given exempt entry is one of the spec's open
-// questions (project.md §10), so both a bare section path and a dotted
-// field path are accepted here.
-func Normalize(section string, raw []Entry, exempt []string) []Entry {
-	fieldExempt := exemptFieldsFor(section, exempt)
+// TagPrefix is the comment prefix marking an object as mtha-managed or
+// mtha-selected (project.md §5.5, §7.3).
+const TagPrefix = "mtha:"
 
+// Select returns the raw entries of a section that take part in drift and
+// sync at all, in their original order and still carrying ".id":
+//
+//   - dynamic entries are dropped (router-generated, not config);
+//   - ip/route is opt-in (project.md §10): only routes whose comment starts
+//     with TagPrefix are selected, so per-router and untagged routes never
+//     enter the diff or the plan.
+//
+// Normalize is Select followed by field stripping, and the two always agree
+// on which entries survive and in what order — the planner relies on that to
+// map a normalised entry (and its identity) back to the router's ".id".
+func Select(section string, raw []Entry) []Entry {
 	out := make([]Entry, 0, len(raw))
 	for _, e := range raw {
 		if isDynamic(e) {
 			continue
 		}
-		out = append(out, normalizeEntry(e, fieldExempt))
+		if section == "ip/route" && !isTagged(e) {
+			continue
+		}
+		out = append(out, e)
 	}
 	return out
+}
+
+func isTagged(e Entry) bool {
+	c, _ := stringField(e, "comment")
+	return strings.HasPrefix(c, TagPrefix)
+}
+
+// Normalize drops entries and fields that must never be compared between
+// routers: entries Select excludes, the router-assigned ".id", runtime state
+// fields (see stateFields), and any field listed as exempt for this section
+// in the pair's sync.exempt list (project.md §5.1, §5.3). Field-level
+// exemptions are written "<section>.<field>"; a bare section path exempts
+// the whole section (see SectionExempt) and is ignored here.
+func Normalize(section string, raw []Entry, exempt []string) []Entry {
+	drop := exemptFieldsFor(section, exempt)
+	for _, f := range commonStateFields {
+		drop[f] = true
+	}
+	for _, f := range sectionStateFields[section] {
+		drop[f] = true
+	}
+
+	selected := Select(section, raw)
+	out := make([]Entry, 0, len(selected))
+	for _, e := range selected {
+		out = append(out, normalizeEntry(e, drop))
+	}
+	return out
+}
+
+// commonStateFields are read-only fields RouterOS reports on many sections
+// that describe runtime state rather than configuration. They are stripped
+// before comparison (they'd otherwise show as permanent drift) and so never
+// appear in a planned write body, where RouterOS would reject them.
+var commonStateFields = []string{".id", ".nextid", ".about", "dynamic", "invalid", "running", "builtin"}
+
+// sectionStateFields are the per-section read-only/runtime fields, in the
+// same spirit as commonStateFields: counters, timestamps and derived flags.
+// Extend this when a new synced section reports a read-only field — the
+// symptom is drift that can never be resolved, or an apply that fails with
+// a RouterOS "unknown parameter" error.
+var sectionStateFields = map[string][]string{
+	"ip/firewall/filter":       {"bytes", "packets"},
+	"ip/firewall/nat":          {"bytes", "packets"},
+	"ip/firewall/mangle":       {"bytes", "packets"},
+	"ip/firewall/raw":          {"bytes", "packets"},
+	"ip/firewall/address-list": {"creation-time"},
+	"ip/dhcp-server/lease": {
+		"status", "last-seen", "expires-after", "blocked", "radius", "host-name",
+		"active-address", "active-mac-address", "active-client-id", "active-server",
+	},
+	"ip/route":         {"active", "inactive", "static", "connect", "ecmp", "hw-offloaded", "immediate-gw", "local-address"},
+	"system/script":    {"owner", "last-started", "run-count"},
+	"system/scheduler": {"owner", "next-run", "run-count"},
+	"user":             {"last-logged-in", "expired"},
 }
 
 func exemptFieldsFor(section string, exempt []string) map[string]bool {
@@ -50,10 +117,10 @@ func isDynamic(e Entry) bool {
 	return ok && v == "true"
 }
 
-func normalizeEntry(e Entry, fieldExempt map[string]bool) Entry {
+func normalizeEntry(e Entry, drop map[string]bool) Entry {
 	out := make(Entry, len(e))
 	for k, v := range e {
-		if k == ".id" || fieldExempt[k] {
+		if drop[k] {
 			continue
 		}
 		out[k] = v
@@ -81,7 +148,8 @@ var defaultLikeValues = map[string]bool{
 }
 
 // EntriesEqual compares two matched, already-normalized entries and returns
-// the fields that differ.
+// the fields that differ, sorted by field name so diff output (and the plans
+// built from it) are deterministic.
 func EntriesEqual(a, b Entry) (bool, []FieldChange) {
 	keys := map[string]bool{}
 	for k := range a {
@@ -113,5 +181,6 @@ func EntriesEqual(a, b Entry) (bool, []FieldChange) {
 		}
 	}
 
+	sort.Slice(changes, func(i, j int) bool { return changes[i].Field < changes[j].Field })
 	return len(changes) == 0, changes
 }

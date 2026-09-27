@@ -37,6 +37,17 @@ func TestWriteSampleParses(t *testing.T) {
 	if pair.Runtime.PriorityMaster != 200 {
 		t.Errorf("priority_master = %d, want 200", pair.Runtime.PriorityMaster)
 	}
+	exemptPort := false
+	for _, e := range pair.Sync.Exempt {
+		exemptPort = exemptPort || e == "ip/service.port"
+	}
+	if !exemptPort {
+		t.Error("sample syncs ip/service with router b's REST API on 8443, so it must exempt ip/service.port")
+	}
+	toggles := pair.Runtime.Toggles
+	if toggles.VRRP != "vrrp-lan" || !toggles.Enabled() {
+		t.Errorf("runtime.toggles = %+v, want vrrp-lan with toggles set", toggles)
+	}
 }
 
 func TestWriteSampleRefusesOverwrite(t *testing.T) {

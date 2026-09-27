@@ -240,20 +240,40 @@ Data flow: `poll` goroutines emit `SnapshotMsg` per router → root model update
 
 1. **Skeleton** — pair config, REST client, one-screen dashboard showing both routers' basic status and VRRP state. Done.
 2. **Drift** — section readers, normaliser, diff engine, drift screen (read-only). Done.
-3. **Apply** — planner, dry run, backup, apply, verify. `--write` gate.
+3. **Apply** — planner, dry run, backup, apply, verify. `--write` gate. Done — hunk selection with per-hunk / per-section direction on the Drift screen; `internal/plan` builds the ordered REST operations (backup first, then deletes, updates, creates; `place-before` for firewall creates) from fresh reads; the Apply screen shows the dry run, confirms (twice for the current VRRP master), re-checks the plan is still current, runs it op by op, and re-runs drift to report residuals. Also settled the identity rules the planner depends on (§10.1).
 4. **Runtime** — templates, deploy, verify, remove. Done — extended beyond the original §5.5 scope to also provision the VRRP interface(s) and VIP(s) themselves (`interface/vrrp`, `ip/address`), not only the automation layered on top of one.
 5. **Failover** — pre-flight, action, live view, VIP probe.
 6. **Events** — log merge, timeline.
-7. **Polish** — multi-pair, help, release pipeline.
+7. **Polish** — in-app help (`?`). Multi-pair and the release pipeline are dropped (§10.1).
 
-Milestones 1–2 deliver value on their own and de-risk the hardest part (normalisation).
+Milestones 1–2 deliver value on their own and de-risk the hardest part (normalisation). Milestone 3's write path (`internal/plan`: a visible plan, explicit confirmation, master double-confirm, stop-on-first-failure execution, post-write verification) is the foundation milestone 5 builds on.
 
-## 10. Open questions
+## 10. Decisions and open questions
 
-- Which sections need custom identity rules beyond `comment`/`name`? Firewall rules without comments are the known hard case.
-- Should `ip/route` sync be opt-in per route (by comment tag) rather than whole-section with exemptions?
-- Does the DHCP server on the standby stay enabled with a split scope, or get toggled by the VRRP script? Affects runtime template.
-- Multi-pair from day one, or add after milestone 2?
+### 10.1 Settled
+
+- **Firewall rule identity.** Comment first. A comment repeated within a section is deduplicated in list order: `web`, `web#2`, `web#3`. Uncommented firewall rules (filter/nat/mangle/raw) use an ordinal anchored to the preceding commented rule in the same chain — `input@allow-ssh#2` is the second uncommented `input` rule after `allow-ssh`; rules before a chain's first commented rule are `input#1`, `input#2`, … An insertion therefore only re-identifies the uncommented block after it, up to the next commented rule. Pure positional identity was rejected: it turns every insertion into a cascade of changes.
+- **`ip/route` sync is opt-in by tag.** Only routes whose comment starts with `mtha:` are selected; untagged routes (connected, per-router defaults, anything hand-managed) never enter the diff or a plan. Identity stays comment-first, else `dst-address->gateway`. This replaces "whole section with exemptions" (the §5.1 sample's `# excluding per-router routes` means exactly this).
+- **Read-only state is not config.** Normalisation strips fields RouterOS reports but that describe runtime state (firewall byte/packet counters, script `run-count`, lease `status`, route `active`, …) — they would otherwise be permanent drift and are rejected in write bodies.
+- **DHCP cutover is toggled by the VRRP scripts.** The standby's DHCP server is enabled/disabled by the `on-master` / `on-backup` scripts; a persistently enabled standby with a split scope is dropped. (The runtime templates do not toggle DHCP yet; that is a Runtime template change, tracked with §5.5.)
+- **Runtime writes go through the Apply pipeline.** Runtime deploy/remove never write directly: `runtime.Writes` plans them as `plan.Op`s (`PUT`/`PATCH`/`DELETE` with bodies) from fresh reads. They then run on the Apply screen with the same dry run, per-router backup first, master double confirmation, pre-run recheck, stop on first failure and re-verification (`runtime.Verify`) as a sync, and are journalled as runtime actions. Remove deletes in reverse order (VIPs before their VRRP interface). Only one write runs at a time: while one is running or being planned, another write path refuses to start.
+- **Netwatch priority is per router (milestone 4).** A netwatch down-script drops the router's mtha-managed VRRP interfaces (comment `mtha:vrrp:…`) to `priority_degraded`; its up-script restores that router's own base priority — `priority_master` on A, `priority_backup` on B, so the standby is never promoted — and only when no enabled `mtha:netwatch:` entry on the router is down. VRRP priority is therefore runtime state: Runtime sets it only when creating the interface, never patches it on an existing one, and verifies it as either the base or the degraded value. This refines §5.5's "`priority_master` ↔ `priority_degraded`".
+- **Multi-pair is dropped.** One pair per session. A pair file may still define several pairs, selected with `-pair`; the Pairs screen (§7.1) and pair list (§4) will not be built.
+- **The GoReleaser release pipeline is dropped.** Binaries are built with `go build` (plain `GOOS`/`GOARCH` cross-compilation, §6); §8's GoReleaser entry is superseded.
+- **Apply plan semantics (milestone 3).**
+  - Operations are shown with the HTTP verb actually sent. RouterOS REST maps add → `PUT`, set → `PATCH`, remove → `DELETE`, and every other command (backup, unset) → `POST`; §5.4's "POST" for creates means this `PUT`.
+  - The pre-apply `/system/backup/save` is itself an operation in the plan — it is a write, so it is shown like one — and is the first op for every router the plan writes to.
+  - Per section: deletes, then updates (`PATCH` for fields the source sets, `POST …/unset` for fields it leaves at default), then creates in the source's order. A firewall create is placed before the next same-chain rule on the source that already exists on the target, else appended.
+  - Selected hunks are re-diffed against fresh reads at plan time; hunks that no longer differ are skipped, not written. Creating users (REST cannot read passwords) and adding/removing built-in `ip/service` entries are skipped with a reason. So is anything that could lock mtha out of the target mid-apply: changing the `port`, `disabled` or `address` of its `www-ssl` service, or deleting the user mtha logs in to it as (the pair file's `user`) or changing that user's `group` or `disabled`.
+  - The plan is rebuilt immediately before execution and refused if it differs from the one confirmed.
+  - Execution is sequential and stops at the first failure; drift is re-run afterwards either way.
+  - "Current VRRP master" for the second confirmation includes a router whose VRRP state is unknown (not polled, unreachable, or the read failed). It fails closed: a target needs the second confirmation unless every one of its VRRP entries is positively backup, so a router with no VRRP entries, or with any entry whose role can't be decoded, counts too. The role is decoded from the `master`/`backup` flag properties and from `vrrp-state`, since neither shape has been checked against a real RouterOS 7 response yet; an entry either can't place, or where they disagree, is unknown.
+
+### 10.2 Open
+
+- Which other sections need custom identity rules beyond `comment`/`name`?
+- Rule *order* drift: two commented rules present on both routers but in a different relative order match by identity and show no difference. Detecting (and planning a `move` for) reordered rules is not implemented.
+- Cross-section dependencies on apply (e.g. a DHCP server referencing a pool that isn't synced) follow configured section order only; there is no dependency analysis.
 
 ## 11. Future (v2+)
 

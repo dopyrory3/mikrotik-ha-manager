@@ -1,0 +1,7 @@
+router B:
+  1. POST /system/backup/save {"name":"mtha-pre-apply"}
+       pre-apply backup of router b
+  2. PUT /ip/firewall/nat {"action":"accept","chain":"srcnat","comment":"nat-vpn","place-before":"*9"}
+       create nat-vpn (from router a), placed before masquerade
+  3. PUT /ip/firewall/nat {"action":"accept","chain":"srcnat","comment":"nat-lab","place-before":"*9"}
+       create nat-lab (from router a), placed before masquerade

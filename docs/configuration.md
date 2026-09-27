@@ -40,7 +40,7 @@ pairs:
         - ip/dhcp-server/network
         - ip/dhcp-server/lease   # static only
         - ip/dns/static
-        - ip/route               # excluding per-router routes
+        - ip/route               # only routes commented "mtha:..."
         - ip/service
         - user
         - system/script
@@ -50,12 +50,19 @@ pairs:
         - interface/vrrp.priority
         - ip/address             # per-router interface addresses
         - ip/service.certificate # each router's own self-signed cert
+        - ip/service.port        # router b's REST API (www-ssl) is on 8443
         - user.last-logged-in    # updates independently on every login
+        - ip/dhcp-server.disabled
+        - ip/route.disabled
     runtime:
       netwatch_targets: [1.1.1.1, 8.8.8.8]
       priority_master: 200
       priority_backup: 100
       priority_degraded: 50
+      toggles:
+        vrrp: vrrp-lan
+        dhcp_servers: [dhcp-lan]
+        routes: [mtha-default]
 ```
 
 ## Top level
@@ -64,9 +71,9 @@ pairs:
 | --- | --- | --- |
 | `pairs` | list of pairs | A pair file with no pairs is an error |
 
-Multiple pairs may be defined. Until the pair-picker screen ships, a file
-with more than one pair requires `-pair <name>` on the command line; with
-exactly one pair the name is inferred.
+Multiple pairs may be defined. A file with more than one pair requires
+`-pair <name>` on the command line; with exactly one pair the name is
+inferred.
 
 ## Pair
 
@@ -157,7 +164,11 @@ per-router state rather than config and will otherwise show up as permanent,
 unresolvable drift: `ip/service.certificate` (each router holds its own
 self-signed certificate for `www-ssl` unless you've deliberately installed a
 shared one) and `user.last-logged-in` (updates independently every time
-either router is logged into).
+either router is logged into). If you sync `ip/service` and one router's
+REST API is on a non-standard `port`, also exempt `ip/service.port`, as the
+sample does: Apply refuses to change the target's `www-ssl` port, disabled
+flag or address list (it would cut mtha off mid-apply), so that drift could
+otherwise never be resolved.
 
 ### Runtime
 
@@ -168,10 +179,90 @@ either router is logged into).
 | `priority_backup` | int | VRRP priority a healthy standby holds |
 | `priority_degraded` | int | Priority the up/down scripts drop a router to when its targets are unreachable |
 
-`priority_master`/`priority_backup` set the initial VRRP priority for routers
-`a`/`b` when the Runtime screen provisions a VRRP interface; `priority_degraded`
-and `netwatch_targets` parameterize the netwatch up/down scripts deployed
-alongside it (see [Runtime screen](usage.md#runtime)).
+`priority_master`/`priority_backup` are the base VRRP priority of routers
+`a`/`b`: what the Runtime screen creates a VRRP interface with.
+`priority_degraded` and `netwatch_targets` parameterize the netwatch up/down
+scripts deployed alongside it (see [Runtime screen](usage.md#runtime)):
+
+- a target going down drops that router's priority to `priority_degraded`;
+- a target coming back up restores the router's **own** base priority
+  (`priority_master` on `a`, `priority_backup` on `b`), and only once every
+  mtha netwatch entry on that router is up again.
+
+The scripts only change VRRP interfaces mtha manages (comment
+`mtha:vrrp:<name>`). Because netwatch (and, later, planned failover) moves
+priority on purpose, deploy never resets the priority of a VRRP interface
+that already exists, and verify accepts either the base or the degraded
+priority as `ok`.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `toggles` | map | Optional. What the VRRP on-master/on-backup scripts switch on a transition — see below |
+
+#### Transition toggles
+
+```yaml
+runtime:
+  toggles:
+    vrrp: vrrp-lan             # the instance whose transitions drive this
+    dhcp_servers: [dhcp-lan]   # /ip/dhcp-server entries, by name
+    routes: [mtha-default]     # /ip/route entries, by comment
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `vrrp` | string | Required once either list is set. Must name a `vrrp` entry that has `on`/`vrid`/`addresses` set, since only those get deployed scripts |
+| `dhcp_servers` | list of names | DHCP servers enabled on master, disabled on backup |
+| `routes` | list of comments | Routes enabled on master, disabled on backup — typically the default route out of an uplink only the master should use |
+
+Without `toggles`, the on-master/on-backup scripts only log the transition.
+With it, the named instance's scripts also switch the listed objects, the
+same way the netwatch scripts raise and lower VRRP priority:
+
+- **on-master** enables the listed routes, then the DHCP servers — so
+  routing is in place before the first lease is offered.
+- **on-backup** disables the DHCP servers, then the routes.
+
+Each line is a `find`-and-`set`, so a name or comment that matches nothing on
+a router is a silent no-op rather than a script error. Check the objects
+exist on both routers with exactly those names/comments.
+
+The toggles ride on **one** instance deliberately. With several VRRP
+instances, mastership can split across routers (say `vrrp-lan` master on A,
+`vrrp-wan` master on B); if every instance's scripts toggled DHCP, both
+routers could end up serving. Pick the instance whose VIP clients actually
+use as their gateway — usually the LAN one. The generated scripts keep the
+`# mtha:on-master:<name>` / `# mtha:on-backup:<name>` first line, so adding,
+changing or removing `toggles` later updates mtha's own scripts in place on
+the next deploy (and shows as `mismatched` until then). A hand-written
+script without that marker is still reported as `conflict` and left alone.
+
+**DHCP leases are not replicated.** Lease state is local to each router, and
+mtha does not sync it (see project.md §3.2). The newly-promoted master
+starts with no lease history, so after a cutover clients re-DISCOVER when
+they next renew or rebind:
+
+- With **static leases** kept in sync (`ip/dhcp-server/lease` in `sync`),
+  this is harmless — each client gets its reserved address back.
+- With a **dynamic pool**, the new master may hand a client a different
+  address than it had, and may offer an address the old master had leased
+  to someone else who hasn't renewed yet. The DHCP server's
+  `conflict-detection` setting reduces but does not remove that risk. If
+  stable addresses matter, use static leases.
+
+**The standby's DHCP server must be disabled at rest.** The scripts only run
+on a VRRP transition. If both routers start with the server enabled — for
+example because it was configured by hand before mtha was — both will offer
+leases until the standby next transitions to backup. Disable it on the
+standby yourself after the first deploy (or bounce the standby's VRRP
+interface so on-backup fires), and keep it that way.
+
+Because the toggled objects are deliberately enabled on one router and
+disabled on the other, their `disabled` field will always differ. If
+`ip/dhcp-server` or `ip/route` is in `sync.sections`, add
+`ip/dhcp-server.disabled` and `ip/route.disabled` to `exempt`, or drift
+will never be clean. That exemption applies to every entry in the section,
+so a route disabled by hand on only one router will no longer show as drift.
 
 ## Credentials
 
@@ -205,6 +296,13 @@ literal config diff.
 
 - the router-assigned `.id` field
 - any entry marked `dynamic: true`
+- in `ip/route`, any route whose comment does not start with `mtha:` —
+  route sync is opt-in (see below)
+- read-only runtime state RouterOS reports alongside config: firewall
+  `bytes`/`packets` counters, `invalid`, `running`, script and scheduler
+  `run-count`/`next-run`/`owner`, lease `status`/`last-seen`, route
+  `active`/`inactive`, and similar (the full list is `sectionStateFields` in
+  `internal/model/normalize.go`)
 - any field named in `exempt` as `<section>.<field>`
 
 **Treated as equal:**
@@ -218,8 +316,8 @@ literal config diff.
 
 | Section | Identity |
 | --- | --- |
-| any | the `comment` field, if present and non-empty |
-| `ip/firewall/filter`, `nat`, `mangle`, `raw` | `chain` plus an ordinal within that chain |
+| any | the `comment` field, if present and non-empty; a repeated comment becomes `web`, `web#2`, `web#3`, ... in list order |
+| `ip/firewall/filter`, `nat`, `mangle`, `raw` | `chain` plus an ordinal counted from the preceding commented rule in that chain: `input@allow-ssh#2`, or `input#2` before the chain's first commented rule |
 | `ip/firewall/address-list` | `list` + `address` |
 | `ip/dns/static` | `address` |
 | `ip/route` | `dst-address` → `gateway` |
@@ -228,14 +326,22 @@ literal config diff.
 Practical consequences:
 
 - **Commenting your rules is the single highest-value habit here.** A
-  commented rule is matched reliably; an uncommented firewall rule falls back
-  to chain plus position, so inserting a rule near the top shifts every
-  ordinal below it and shows up as a cascade of false diffs.
+  commented rule is matched reliably. An uncommented firewall rule is matched
+  by its position after the nearest commented rule above it in the same
+  chain, so inserting a rule only re-identifies the uncommented rules between
+  it and the next commented rule — every commented rule acts as a fixed
+  anchor that stops the cascade.
+- **Routes are opt-in.** Only routes you tag with a comment starting
+  `mtha:` (e.g. `mtha:vpn-site-b`) are compared or synced; everything else in
+  `ip/route` — connected routes, each router's own default route, anything
+  per-router — is ignored entirely, so it can never show as drift or be
+  overwritten by an apply. A tagged route is identified by that comment.
 - Two entries on one router that resolve to the same identity are paired by
   encounter order rather than one overwriting the other.
 - Section order in the drift output follows your `sections` list, and hunks
   follow router A's order, so results are stable between runs.
 
 `mtha` reports *what* differs. Which side is the source of truth for a given
-hunk is a decision made at apply time, not by the diff engine — and apply is
-milestone 3.
+hunk is a decision made at apply time, not by the diff engine: you choose a
+direction per hunk or per section on the Drift screen and review the
+resulting plan on the Apply screen (see [usage.md](usage.md#apply)).

@@ -1,0 +1,7 @@
+router B:
+  1. POST /system/backup/save {"name":"bk"}
+       pre-apply backup of router b
+  2. PUT /ip/route {"comment":"mtha:vpn","distance":"1","dst-address":"10.9.0.0/16","gateway":"10.0.0.9"}
+       create mtha:vpn (from router a)
+skipped:
+  ip/route 0.0.0.0/0->203.0.113.1 [A→B]: no longer differs (resolved, or changed since it was selected)

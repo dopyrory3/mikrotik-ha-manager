@@ -140,6 +140,13 @@ func TestWriteMethodsMapToRESTVerbs(t *testing.T) {
 			want: http.MethodPatch,
 		},
 		{
+			name: "Command runs via POST",
+			call: func(c *Client) error {
+				return c.Command(context.Background(), "/system/backup/save", map[string]string{"name": "x"}, nil)
+			},
+			want: http.MethodPost,
+		},
+		{
 			name: "Delete removes",
 			call: func(c *Client) error { return c.Delete(context.Background(), "/system/script/*1") },
 			want: http.MethodDelete,
@@ -246,7 +253,7 @@ func TestTypedReadersDecodeRouterOSPayloads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VRRP: %v", err)
 	}
-	if len(vrrp) != 1 || vrrp[0].State != "master" || vrrp[0].Priority != "200" {
+	if len(vrrp) != 1 || vrrp[0].Role() != RoleMaster || vrrp[0].Priority != "200" {
 		t.Errorf("VRRP = %+v", vrrp)
 	}
 	if vrrp[0].ID != "*1" {
@@ -262,6 +269,63 @@ func TestTypedReadersDecodeRouterOSPayloads(t *testing.T) {
 	}
 	if nw[0].ID != "*1" {
 		t.Errorf("Netwatch[0].ID = %q, want *1 decoded from the \".id\" field", nw[0].ID)
+	}
+}
+
+// RouterOS REST reports print flags as boolean properties; this is the
+// shape GET /rest/interface/vrrp is expected to return. It is hand-written,
+// not captured from a device (see VRRPInstance), which is why the
+// "vrrp-state" shape above is decoded too.
+func TestVRRPDecodesFlagShapedPayload(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/interface/vrrp", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `[
+			{".id":"*1","name":"vrrp-lan","interface":"ether2","priority":"200","master":"true","backup":"false","running":"true","disabled":"false"},
+			{".id":"*2","name":"vrrp-wan","interface":"ether1","priority":"100","master":"false","backup":"true","running":"true","disabled":"false"},
+			{".id":"*3","name":"vrrp-mgmt","interface":"ether3","priority":"100","master":false,"backup":false,"running":"false","disabled":"true"}
+		]`)
+	})
+	c, _ := newRestClient(t, mux)
+
+	vrrp, err := c.VRRP(context.Background())
+	if err != nil {
+		t.Fatalf("VRRP: %v", err)
+	}
+	want := []VRRPRole{RoleMaster, RoleBackup, RoleUnknown}
+	if len(vrrp) != len(want) {
+		t.Fatalf("got %d instances, want %d", len(vrrp), len(want))
+	}
+	for i, w := range want {
+		if got := vrrp[i].Role(); got != w {
+			t.Errorf("%s role = %v, want %v (%+v)", vrrp[i].Name, got, w, vrrp[i])
+		}
+	}
+}
+
+func TestVRRPRole(t *testing.T) {
+	cases := []struct {
+		name string
+		v    VRRPInstance
+		want VRRPRole
+	}{
+		{"master flag", VRRPInstance{Master: "true", Backup: "false"}, RoleMaster},
+		{"backup flag", VRRPInstance{Master: "false", Backup: "true"}, RoleBackup},
+		{"master flag only", VRRPInstance{Master: "true"}, RoleMaster},
+		{"vrrp-state master", VRRPInstance{State: "master"}, RoleMaster},
+		{"vrrp-state backup", VRRPInstance{State: "backup"}, RoleBackup},
+		{"flags and state agree", VRRPInstance{Backup: "true", State: "backup"}, RoleBackup},
+		{"nothing reported", VRRPInstance{}, RoleUnknown},
+		{"neither flag set", VRRPInstance{Master: "false", Backup: "false"}, RoleUnknown},
+		{"both flags set", VRRPInstance{Master: "true", Backup: "true"}, RoleUnknown},
+		{"flags and state disagree", VRRPInstance{Backup: "true", State: "master"}, RoleUnknown},
+		{"other state", VRRPInstance{State: "init"}, RoleUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.v.Role(); got != tc.want {
+				t.Errorf("Role() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 
 	"mtha/internal/diff"
 	"mtha/internal/model"
+	"mtha/internal/plan"
 	"mtha/internal/routeros"
 )
 
@@ -65,14 +66,9 @@ func fetchDrift(ctx context.Context, clientA, clientB *routeros.Client, sections
 		go func(i int, section string) {
 			defer wg.Done()
 
-			aEntries, err := clientA.GetSection(ctx, section)
+			aEntries, bEntries, err := fetchSectionPair(ctx, clientA, clientB, section)
 			if err != nil {
-				results[i].err = fmt.Errorf("fetch %s from router a: %w", section, err)
-				return
-			}
-			bEntries, err := clientB.GetSection(ctx, section)
-			if err != nil {
-				results[i].err = fmt.Errorf("fetch %s from router b: %w", section, err)
+				results[i].err = err
 				return
 			}
 			results[i].diff = diff.Compare(section, aEntries, bEntries, exempt)
@@ -93,6 +89,20 @@ func fetchDrift(ctx context.Context, clientA, clientB *routeros.Client, sections
 	}
 
 	return driftResultMsg{data: data, err: firstErr}
+}
+
+// fetchSectionPair reads one section's raw entries from both routers. Drift
+// diffs them; the Apply screen plans from them (it needs the raw ".id"s).
+func fetchSectionPair(ctx context.Context, clientA, clientB *routeros.Client, section string) (a, b []model.Entry, err error) {
+	a, err = clientA.GetSection(ctx, section)
+	if err != nil {
+		return nil, nil, fmt.Errorf("fetch %s from router a: %w", section, err)
+	}
+	b, err = clientB.GetSection(ctx, section)
+	if err != nil {
+		return nil, nil, fmt.Errorf("fetch %s from router b: %w", section, err)
+	}
+	return a, b, nil
 }
 
 func (m Model) handleDriftKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -130,8 +140,103 @@ func (m Model) handleDriftKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.driftSection++
 		}
 		return m, nil
+
+	case " ":
+		if hunks := m.currentHunks(); m.driftFocusHunks && m.driftHunk < len(hunks) {
+			m.cycleHunkSelection(hunks[m.driftHunk])
+		}
+		return m, nil
+
+	case "a", "b":
+		dir := plan.AtoB
+		if msg.String() == "b" {
+			dir = plan.BtoA
+		}
+		m.selectSection(dir)
+		return m, nil
+
+	case "c":
+		if len(m.driftSections) > 0 {
+			delete(m.driftSelected, m.driftSections[m.driftSection])
+		}
+		return m, nil
 	}
 	return m, nil
+}
+
+// Hunk selection (project.md §5.3: "hunk-level selection", direction "chosen
+// per hunk or per section"). Selections are keyed by section and
+// plan.HunkRef, which survive a drift refresh; the Apply screen turns them
+// into a plan against fresh reads.
+
+// cycleHunkSelection steps one hunk through unselected → A→B → B→A →
+// unselected.
+func (m *Model) cycleHunkSelection(h diff.Hunk) {
+	section := m.driftSections[m.driftSection]
+	ref := plan.RefOf(h)
+	dir, selected := m.driftSelected[section][ref]
+	switch {
+	case !selected:
+		m.setSelection(section, ref, plan.AtoB)
+	case dir == plan.AtoB:
+		m.setSelection(section, ref, plan.BtoA)
+	default:
+		delete(m.driftSelected[section], ref)
+	}
+}
+
+// selectSection selects every hunk in the current section in one direction.
+func (m *Model) selectSection(dir plan.Direction) {
+	if len(m.driftSections) == 0 {
+		return
+	}
+	section := m.driftSections[m.driftSection]
+	for _, h := range m.currentHunks() {
+		m.setSelection(section, plan.RefOf(h), dir)
+	}
+}
+
+func (m *Model) setSelection(section string, ref plan.HunkRef, dir plan.Direction) {
+	if m.driftSelected == nil {
+		m.driftSelected = map[string]map[plan.HunkRef]plan.Direction{}
+	}
+	if m.driftSelected[section] == nil {
+		m.driftSelected[section] = map[plan.HunkRef]plan.Direction{}
+	}
+	m.driftSelected[section][ref] = dir
+}
+
+// pruneDriftSelection drops selections for hunks that no longer appear in
+// freshly fetched drift data (resolved, e.g. by an apply). Sections missing
+// from data (fetch failed) keep their selections.
+func (m *Model) pruneDriftSelection(data map[string]diff.SectionDiff) {
+	for section, refs := range m.driftSelected {
+		sd, ok := data[section]
+		if !ok {
+			continue
+		}
+		present := make(map[plan.HunkRef]bool, len(sd.Hunks))
+		for _, h := range sd.Hunks {
+			present[plan.RefOf(h)] = true
+		}
+		for ref := range refs {
+			if !present[ref] {
+				delete(refs, ref)
+			}
+		}
+		if len(refs) == 0 {
+			delete(m.driftSelected, section)
+		}
+	}
+}
+
+// selectedCount is the number of hunks selected across all sections.
+func (m Model) selectedCount() int {
+	n := 0
+	for _, refs := range m.driftSelected {
+		n += len(refs)
+	}
+	return n
 }
 
 func (m Model) currentHunks() []diff.Hunk {
@@ -164,7 +269,7 @@ func renderDrift(m Model) string {
 	}
 
 	b.WriteString("\n\n")
-	b.WriteString(styleStatusBar.Render(fmt.Sprintf(" %s | drift | r: refresh, enter: hunks, esc: back, tab: runtime, q: quit ", m.pair.Name)))
+	b.WriteString(styleStatusBar.Render(fmt.Sprintf(" %s | %s | drift | %d selected | space: select hunk, a/b: section A→B/B→A, c: clear, 4: apply, ?: help ", m.pair.Name, modeLabel(m.writeMode), m.selectedCount())))
 	return b.String()
 }
 
@@ -190,6 +295,9 @@ func renderSectionList(m Model) string {
 			status = styleDegraded.Render(fmt.Sprintf("%d hunk(s)", len(sd.Hunks)))
 		default:
 			status = styleReady.Render("clean")
+		}
+		if n := len(m.driftSelected[section]); n > 0 {
+			status += styleAccent.Render(fmt.Sprintf(" (%d selected)", n))
 		}
 		fmt.Fprintf(&b, "%s%-30s %s\n", cursor, section, status)
 	}
@@ -218,7 +326,7 @@ func renderHunkList(m Model) string {
 	}
 
 	for i, h := range sd.Hunks {
-		cursor := cursorPrefix(i == m.driftHunk && m.driftFocusHunks)
+		cursor := cursorPrefix(i == m.driftHunk && m.driftFocusHunks) + selectionMarker(m.driftSelected[section], h)
 
 		switch {
 		case h.OnA && !h.OnB:
@@ -235,4 +343,13 @@ func renderHunkList(m Model) string {
 		}
 	}
 	return b.String()
+}
+
+// selectionMarker shows a hunk's selected sync direction, if any.
+func selectionMarker(selected map[plan.HunkRef]plan.Direction, h diff.Hunk) string {
+	dir, ok := selected[plan.RefOf(h)]
+	if !ok {
+		return "      "
+	}
+	return styleAccent.Render("["+dir.String()+"]") + " "
 }
