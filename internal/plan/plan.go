@@ -44,10 +44,20 @@ func (d Direction) Source() string {
 }
 
 // HunkRef identifies one hunk within a section across re-reads: its
-// identity plus its occurrence within that identity (see diff.Hunk).
+// identity plus its occurrence within that identity (see diff.Hunk). For a
+// chain's order finding (diff.OrderHunk) it carries only Chain instead, so
+// the two kinds can share one selection map and never collide.
 type HunkRef struct {
 	Identity   string
 	Occurrence int
+	// Chain is set, and nothing else, for an order finding: the firewall
+	// chain whose rules are in a different order on the two routers.
+	Chain string
+}
+
+// OrderRef returns the HunkRef for a chain's order finding.
+func OrderRef(o diff.OrderHunk) HunkRef {
+	return HunkRef{Chain: o.Chain}
 }
 
 // RefOf returns the HunkRef for a diff hunk.
@@ -56,6 +66,9 @@ func RefOf(h diff.Hunk) HunkRef {
 }
 
 func (r HunkRef) String() string {
+	if r.Chain != "" {
+		return fmt.Sprintf("rule order in chain %s", r.Chain)
+	}
 	if r.Occurrence == 0 {
 		return r.Identity
 	}
@@ -86,6 +99,11 @@ type Options struct {
 	// or disabled, since the rest of the apply (and the next session) could
 	// no longer connect.
 	Users map[string]string
+	// Referents are the extra read-only reads the reference check needs:
+	// the sections a planned body refers to that aren't among the inputs,
+	// on the router it writes to. ReferenceReads lists them. A read missing
+	// here is warned about as unchecked, never assumed present.
+	Referents map[Read][]model.Entry
 }
 
 // DefaultBackupName is used when Options.BackupName is empty.
@@ -146,6 +164,11 @@ func (s Skip) Where() string {
 type Plan struct {
 	Ops     []Op
 	Skipped []Skip
+	// Warnings are planned writes that may not do what the operator
+	// expects — so far, a body naming an object the target lacks (see
+	// references.go). Unlike a Skip, the op still runs: RouterOS may well
+	// accept it.
+	Warnings []Warning
 }
 
 // Empty reports whether the plan has nothing to write.
@@ -217,6 +240,7 @@ func Build(inputs []SectionInput, opts Options) Plan {
 		p.Ops = append(p.Ops, ops...)
 	}
 	p.Skipped = skipped
+	p.Warnings = checkReferences(p.Ops, inputs, opts.Referents)
 	return p
 }
 
@@ -301,6 +325,12 @@ func buildSection(in SectionInput, opts Options) ([]Op, []Skip) {
 			chosen = append(chosen, selected{hunk: h, dir: dir})
 		}
 	}
+	orders := map[HunkRef]diff.OrderHunk{}
+	for _, o := range sd.Order {
+		ref := OrderRef(o)
+		stillDiffers[ref] = true
+		orders[ref] = o
+	}
 
 	var skips []Skip
 	for _, ref := range sortedRefs(in.Choices) {
@@ -308,6 +338,18 @@ func buildSection(in SectionInput, opts Options) ([]Op, []Skip) {
 			skips = append(skips, Skip{
 				Section: in.Section, Ref: ref, Direction: in.Choices[ref],
 				Reason: "no longer differs (resolved, or changed since it was selected)",
+			})
+			continue
+		}
+		if o, ok := orders[ref]; ok {
+			// docs/design-questions.md §2: planning a move waits for the
+			// lab to confirm RouterOS REST's move call. Deleting and
+			// re-creating the rules is no stand-in: the chain would run
+			// without them for a moment, and they'd lose their counters
+			// and ".id".
+			skips = append(skips, Skip{
+				Section: in.Section, Ref: ref, Direction: in.Choices[ref],
+				Reason: fmt.Sprintf("%s out of order (%s); %s", countRules(len(o.Moved), o.Rules), movedList(o.Moved), orderSkipReason),
 			})
 		}
 	}
@@ -518,12 +560,30 @@ func stringOf(v any) string {
 	return fmt.Sprintf("%v", v)
 }
 
+// orderSkipReason is why a selected order finding produces no ops.
+const orderSkipReason = "reorder this chain by hand; move is not implemented"
+
+func countRules(moved, of int) string {
+	return fmt.Sprintf("%d of %d rule(s)", moved, of)
+}
+
+func movedList(moved []diff.RuleRef) string {
+	names := make([]string, len(moved))
+	for i, r := range moved {
+		names[i] = HunkRef{Identity: r.Identity, Occurrence: r.Occurrence}.String()
+	}
+	return strings.Join(names, ", ")
+}
+
 func sortedRefs(m map[HunkRef]Direction) []HunkRef {
 	refs := make([]HunkRef, 0, len(m))
 	for r := range m {
 		refs = append(refs, r)
 	}
 	sort.Slice(refs, func(i, j int) bool {
+		if refs[i].Chain != refs[j].Chain {
+			return refs[i].Chain < refs[j].Chain
+		}
 		if refs[i].Identity != refs[j].Identity {
 			return refs[i].Identity < refs[j].Identity
 		}

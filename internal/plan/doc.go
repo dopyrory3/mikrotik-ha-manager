@@ -25,6 +25,20 @@
 // lock mtha out of the target, such as moving its www-ssl service or
 // removing the user it logs in as) are skipped with a reason too.
 //
+// A selected order finding (a firewall chain whose shared rules are in a
+// different order, docs/design-questions.md §2) is skipped with a reason
+// too: RouterOS's move command is not yet planned, and deleting and
+// re-creating rules to reorder them is not an acceptable stand-in.
+//
+// Build does not reorder across sections: sections run in the order
+// given. Instead, every create or PATCH body that names an object in
+// another section (a lease's server, a DHCP server's pool, a scheduler's
+// script, a firewall rule's address list or interface) is checked against
+// the target, and a referent that isn't there, and isn't created earlier in
+// the plan, becomes a Plan.Warnings entry in the dry run (§3). Referents
+// outside the inputs are read by the caller: ReferenceReads lists them and
+// Options.Referents carries them in.
+//
 // Build is pure — no I/O — which keeps the planner golden-testable. Execute
 // performs a single Op; the caller (the Apply screen) runs a plan one Op at a
 // time, stops at the first failure, and then re-runs drift detection to

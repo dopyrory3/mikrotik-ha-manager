@@ -34,6 +34,14 @@ func TestWriteSampleParses(t *testing.T) {
 	if len(pair.Sync.Sections) == 0 {
 		t.Error("sample has no sync sections")
 	}
+	// docs/design-questions.md §3: every synced referent comes before the
+	// sections that name it, address lists first of all.
+	if len(file.Warnings) > 0 {
+		t.Errorf("sample loads with warnings: %q", file.Warnings)
+	}
+	if pair.Sync.Sections[0] != "ip/firewall/address-list" {
+		t.Errorf("first sync section = %q, want ip/firewall/address-list", pair.Sync.Sections[0])
+	}
 	if pair.Runtime.PriorityMaster != 200 {
 		t.Errorf("priority_master = %d, want 200", pair.Runtime.PriorityMaster)
 	}

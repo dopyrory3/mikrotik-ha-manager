@@ -90,6 +90,9 @@ type Pair struct {
 // File is the top-level shape of the pair file.
 type File struct {
 	Pairs []Pair `yaml:"pairs"`
+	// Warnings are problems Load found that don't stop the file being
+	// used, such as SectionOrderWarnings.
+	Warnings []string `yaml:"-"`
 }
 
 // DefaultPath returns the default pair file location, ~/.config/mtha/pairs.yaml.
@@ -114,6 +117,7 @@ func Load(path string) (*File, error) {
 	}
 
 	for _, p := range f.Pairs {
+		f.Warnings = append(f.Warnings, p.SectionOrderWarnings()...)
 		if _, ok := p.Routers["a"]; !ok {
 			return nil, fmt.Errorf("pair %q: missing router \"a\"", p.Name)
 		}
@@ -138,4 +142,54 @@ func (f *File) Pair(name string) (*Pair, error) {
 		}
 	}
 	return nil, fmt.Errorf("pair %q not found", name)
+}
+
+// sectionReferents maps a sync section to the sync sections its entries name
+// objects in (docs/design-questions.md §3): a lease names its DHCP server, a
+// scheduler its script, a firewall rule its address lists. It is the synced
+// half of internal/plan's reference table, which a plan test keeps it in
+// step with; referents mtha never syncs (ip/pool, user/group, interfaces)
+// have no order to check.
+var sectionReferents = map[string][]string{
+	"ip/firewall/filter":   {"ip/firewall/address-list"},
+	"ip/firewall/nat":      {"ip/firewall/address-list"},
+	"ip/firewall/mangle":   {"ip/firewall/address-list"},
+	"ip/firewall/raw":      {"ip/firewall/address-list"},
+	"ip/dhcp-server/lease": {"ip/dhcp-server"},
+	"system/scheduler":     {"system/script"},
+}
+
+// SectionReferents returns the sync sections whose objects entries of
+// section can name.
+func SectionReferents(section string) []string {
+	return sectionReferents[section]
+}
+
+// SectionOrderWarnings reports each synced referent listed after a section
+// that refers to it (docs/design-questions.md §3, option D). An apply runs
+// sections in the configured order (project.md §5.4), so a referrer listed
+// first is created before the object it names: a lease before its DHCP
+// server, a scheduler before its script, a firewall rule before the address
+// list it matches, which for a drop rule on a blocklist fails open until
+// the list is written. It is a warning, not an error: RouterOS accepts some
+// of these, and the apply's dry run checks each reference again.
+func (p Pair) SectionOrderWarnings() []string {
+	pos := make(map[string]int, len(p.Sync.Sections))
+	for i, s := range p.Sync.Sections {
+		if _, dup := pos[s]; !dup {
+			pos[s] = i
+		}
+	}
+	var out []string
+	for i, s := range p.Sync.Sections {
+		if pos[s] != i {
+			continue
+		}
+		for _, ref := range sectionReferents[s] {
+			if j, ok := pos[ref]; ok && j > i {
+				out = append(out, fmt.Sprintf("pair %q: sync section %s is listed after %s, which refers to it; list %s first so its entries exist before anything that names them is created", p.Name, ref, s, ref))
+			}
+		}
+	}
+	return out
 }
