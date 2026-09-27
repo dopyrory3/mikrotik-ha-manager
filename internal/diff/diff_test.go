@@ -14,6 +14,15 @@ func TestCompareCleanWhenIdentical(t *testing.T) {
 	}
 }
 
+func TestCompareVRRPMasterAndBackupClean(t *testing.T) {
+	a := []model.Entry{{".id": "*1", "name": "vrrp-lan", "interface": "ether2", "vrid": "1", "master": "true", "running": "true"}}
+	b := []model.Entry{{".id": "*2", "name": "vrrp-lan", "interface": "ether2", "vrid": "1", "backup": "true", "running": "false"}}
+
+	if got := Compare("interface/vrrp", a, b, nil); !got.Clean() {
+		t.Fatalf("master/backup role should not produce drift: %+v", got.Hunks)
+	}
+}
+
 func TestCompareDetectsOnlyOnA(t *testing.T) {
 	a := []model.Entry{{"name": "svc-api"}}
 	var b []model.Entry

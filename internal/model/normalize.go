@@ -86,6 +86,7 @@ var commonStateFields = []string{".id", ".nextid", ".about", "dynamic", "invalid
 // symptom is drift that can never be resolved, or an apply that fails with
 // a RouterOS "unknown parameter" error.
 var sectionStateFields = map[string][]string{
+	"interface/vrrp":           {"master", "backup", "mac-address"},
 	"ip/firewall/filter":       {"bytes", "packets"},
 	"ip/firewall/nat":          {"bytes", "packets"},
 	"ip/firewall/mangle":       {"bytes", "packets"},

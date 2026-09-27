@@ -152,12 +152,13 @@ An `exempt` entry takes one of two forms:
 | Form | Effect |
 | --- | --- |
 | `system/identity` | The **whole section** is skipped — it is not fetched and not diffed |
-| `interface/vrrp.priority` | That **single field** is stripped from every entry of `interface/vrrp` before comparison |
+| `interface/vrrp.priority` | That **single field** is stripped from every entry of `interface/vrrp` before comparison. RouterOS-reported `master`/`backup` role flags and `mac-address` are also stripped automatically as read-only state. |
 
 Both forms may be mixed in the same list, and a section may be exempt while
 still being relevant elsewhere (VRRP priority differs by design between
 master and backup, so it must be exempted from drift even though VRRP state
-is central to readiness).
+is central to readiness). `master`, `backup` and `mac-address` are always
+normalised away and do not need pair-file exemptions.
 
 Two field exemptions are worth adding to almost every pair, since they are
 per-router state rather than config and will otherwise show up as permanent,

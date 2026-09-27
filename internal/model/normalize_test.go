@@ -2,6 +2,26 @@ package model
 
 import "testing"
 
+func TestNormalizeDropsVRRPRoleFlags(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  Entry
+	}{
+		{"master", Entry{"name": "vrrp-lan", "interface": "ether1", "master": "true", "mac-address": "00:00:5e:00:01:01"}},
+		{"backup", Entry{"name": "vrrp-lan", "interface": "ether1", "backup": "true", "mac-address": "00:00:5e:00:01:01"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out := Normalize("interface/vrrp", []Entry{tc.raw}, nil)
+			for _, flag := range []string{"master", "backup", "mac-address"} {
+				if _, ok := out[0][flag]; ok {
+					t.Errorf("%s role flag should be dropped, got %v", flag, out[0])
+				}
+			}
+		})
+	}
+}
+
 func TestNormalizeDropsIDAndDynamic(t *testing.T) {
 	raw := []Entry{
 		{".id": "*1", "name": "static-rule", "comment": "keep"},
