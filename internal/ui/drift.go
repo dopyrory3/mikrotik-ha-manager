@@ -269,7 +269,7 @@ func renderDrift(m Model) string {
 	}
 
 	b.WriteString("\n\n")
-	b.WriteString(styleStatusBar.Render(fmt.Sprintf(" %s | %s | drift | %d selected | space: select hunk, a/b: section A→B/B→A, c: clear, 4: apply ", m.pair.Name, modeLabel(m.writeMode), m.selectedCount())))
+	b.WriteString(styleStatusBar.Render(fmt.Sprintf(" %s | %s | drift | %d selected | space: select hunk, a/b: section A→B/B→A, c: clear, 4: apply, ?: help ", m.pair.Name, modeLabel(m.writeMode), m.selectedCount())))
 	return b.String()
 }
 

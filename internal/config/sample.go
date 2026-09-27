@@ -56,11 +56,23 @@ pairs:
         - ip/address             # per-router interface addresses
         - ip/service.certificate # each router's own self-signed cert
         - user.last-logged-in    # updates independently on every login
+        # runtime.toggles below enables these on the master and disables
+        # them on the standby, so "disabled" differs by design:
+        - ip/dhcp-server.disabled
+        - ip/route.disabled
     runtime:
       netwatch_targets: [1.1.1.1, 8.8.8.8]
       priority_master: 200
       priority_backup: 100
       priority_degraded: 50
+      # Optional: what the VRRP on-master/on-backup scripts switch on
+      # cutover. Omit it to keep those scripts log-only. The standby's DHCP
+      # server must be disabled at rest; DHCP leases are not synced, so
+      # clients re-DISCOVER against the new master after a failover.
+      toggles:
+        vrrp: vrrp-lan             # the instance whose transitions drive this
+        dhcp_servers: [dhcp-lan]   # /ip/dhcp-server names
+        routes: [mtha-default]     # /ip/route comments
 `
 
 // WriteSample writes the sample pair file to path, creating parent

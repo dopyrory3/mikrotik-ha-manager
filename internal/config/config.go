@@ -51,6 +51,30 @@ type RuntimeConfig struct {
 	PriorityMaster   int      `yaml:"priority_master"`
 	PriorityBackup   int      `yaml:"priority_backup"`
 	PriorityDegraded int      `yaml:"priority_degraded"`
+	// Toggles is what the on-master/on-backup scripts switch on a VRRP
+	// transition (project.md §5.5: "optionally enable/disable DHCP server,
+	// adjust routes"). Zero value keeps the scripts log-only.
+	Toggles TogglesConfig `yaml:"toggles,omitempty"`
+}
+
+// TogglesConfig names the router objects a VRRP transition switches: on
+// master they're enabled, on backup disabled, so only the router holding
+// the VIP serves DHCP and carries the listed routes.
+type TogglesConfig struct {
+	// VRRP is the one instance (by interface name) whose transitions drive
+	// the toggles. Required when any toggle is set: with several instances,
+	// splitting mastership across routers must not leave both serving DHCP.
+	VRRP string `yaml:"vrrp,omitempty"`
+	// DHCPServers are /ip/dhcp-server entries, matched by name.
+	DHCPServers []string `yaml:"dhcp_servers,omitempty"`
+	// Routes are /ip/route entries, matched by comment — typically the
+	// default route out of the uplink only the master should use.
+	Routes []string `yaml:"routes,omitempty"`
+}
+
+// Enabled reports whether any toggle is configured.
+func (t TogglesConfig) Enabled() bool {
+	return len(t.DHCPServers) > 0 || len(t.Routes) > 0
 }
 
 // Pair is one managed HA pair: two routers, the VRRP instances linking them,

@@ -39,10 +39,17 @@ type Plan struct {
 // definition. A VRRP instance with none of "on"/"vrid"/"addresses" set is
 // tracked for the dashboard/drift screens only and produces no Ops; one with
 // some but not all of them set is an error, naming the missing field.
+// runtime.toggles, when set, is rendered into the on-master/on-backup
+// scripts of the one instance it names; naming no deployable instance is an
+// error.
 func BuildPlan(pair *config.Pair) (map[string]Plan, error) {
 	plans := map[string]Plan{
 		"a": {Router: "a"},
 		"b": {Router: "b"},
+	}
+
+	if err := validateToggles(pair); err != nil {
+		return nil, err
 	}
 
 	for _, inst := range pair.VRRP {
@@ -81,6 +88,34 @@ func BuildPlan(pair *config.Pair) (map[string]Plan, error) {
 	return plans, nil
 }
 
+// validateToggles requires a configured runtime.toggles to name exactly
+// the deployable instance it rides on: toggles attached to a tracked-only
+// instance would silently never deploy, and toggles with no named instance
+// would be ambiguous across several.
+func validateToggles(pair *config.Pair) error {
+	toggles := pair.Runtime.Toggles
+	if !toggles.Enabled() {
+		return nil
+	}
+	if toggles.VRRP == "" {
+		return fmt.Errorf("runtime.toggles: \"vrrp\" is required to name the instance whose transitions drive the toggles")
+	}
+	for _, inst := range pair.VRRP {
+		if inst.Interface != toggles.VRRP {
+			continue
+		}
+		deployable, err := validateInstance(inst)
+		if err != nil {
+			return err
+		}
+		if !deployable {
+			return fmt.Errorf("runtime.toggles: vrrp instance %s has no \"on\"/\"vrid\"/\"addresses\" set, so its scripts are never deployed", inst.Interface)
+		}
+		return nil
+	}
+	return fmt.Errorf("runtime.toggles: vrrp instance %s is not defined in the pair's vrrp list", toggles.VRRP)
+}
+
 // validateInstance reports whether inst has enough config to deploy. An
 // instance with none of the deploy fields set is valid but not deployable
 // (it's tracked read-only, as milestones 1-2 always supported); one with
@@ -106,11 +141,16 @@ func vrrpTag(name string) string { return "mtha:vrrp:" + name }
 // vrrpOp is the VRRP interface itself: role-dependent priority (router "a"
 // starts at priority_master, "b" at priority_backup — project.md §5.1's
 // router-key convention, not a per-pair choice), plus the tagged
-// on-master/on-backup transition scripts.
+// on-master/on-backup transition scripts, carrying runtime.toggles only if
+// this is the instance they name.
 func vrrpOp(inst config.VRRPInstance, router string, rt config.RuntimeConfig) Op {
 	priority := rt.PriorityBackup
 	if router == "a" {
 		priority = rt.PriorityMaster
+	}
+	var toggles config.TogglesConfig
+	if rt.Toggles.VRRP == inst.Interface {
+		toggles = rt.Toggles
 	}
 	return Op{
 		Section:    "interface/vrrp",
@@ -125,8 +165,8 @@ func vrrpOp(inst config.VRRPInstance, router string, rt config.RuntimeConfig) Op
 			"interval":        "1s",
 			"preemption-mode": "true",
 			"version":         "3",
-			"on-master":       onMasterScript(inst.Interface),
-			"on-backup":       onBackupScript(inst.Interface),
+			"on-master":       onMasterScript(inst.Interface, toggles),
+			"on-backup":       onBackupScript(inst.Interface, toggles),
 			"comment":         vrrpTag(inst.Interface),
 		},
 		Guarded: map[string]string{

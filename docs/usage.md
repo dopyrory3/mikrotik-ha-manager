@@ -109,6 +109,12 @@ or a leading `# mtha:...` comment line inside a script body) so it can be
 found again and cleanly removed, and so a hand-written on-master/on-backup
 script is never silently overwritten — that shows as `conflict` instead.
 
+The on-master/on-backup scripts log the transition and, if
+`runtime.toggles` is set, enable (master) or disable (backup) the named DHCP
+servers and routes — see
+[configuration.md](configuration.md#transition-toggles), including why the
+standby's DHCP server must be disabled at rest.
+
 The screen lists, per router, every object it manages and its state:
 
 | State | Meaning |
@@ -213,6 +219,7 @@ Global, on any screen:
 | `4` | Apply |
 | `6` | Events |
 | `tab` | Cycle Overview → Drift → Runtime → Apply → Events → Overview |
+| `?` | Open/close the help overlay |
 | `q`, `ctrl+c` | Quit |
 
 Drift screen:
@@ -258,8 +265,18 @@ Events screen:
 | `g` | Jump to the newest event |
 | `G` | Jump to the oldest event |
 
-There is no in-app help overlay yet (`?` is not wired up); this document is
-the keybinding reference.
+Help overlay:
+
+| Key | Action |
+| --- | --- |
+| `?`, `esc` | Close the overlay |
+| `q`, `ctrl+c` | Quit |
+
+`?` opens a help overlay on any screen, listing the global keys plus the
+ones for the screen you opened it from. While it is open every other key is
+ignored — so, for instance, a stray `y` can't confirm a pending Runtime
+deploy/remove underneath it. Closing it returns you to the same screen,
+with any pending confirmation still pending.
 
 ## Readiness checks
 

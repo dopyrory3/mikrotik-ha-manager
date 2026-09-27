@@ -37,6 +37,10 @@ func TestWriteSampleParses(t *testing.T) {
 	if pair.Runtime.PriorityMaster != 200 {
 		t.Errorf("priority_master = %d, want 200", pair.Runtime.PriorityMaster)
 	}
+	toggles := pair.Runtime.Toggles
+	if toggles.VRRP != "vrrp-lan" || !toggles.Enabled() {
+		t.Errorf("runtime.toggles = %+v, want vrrp-lan with toggles set", toggles)
+	}
 }
 
 func TestWriteSampleRefusesOverwrite(t *testing.T) {
