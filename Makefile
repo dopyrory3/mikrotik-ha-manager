@@ -18,5 +18,9 @@ cover:
 	go test -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out
 
+# Stamp the binary with the nearest tag (e.g. v0.1.0, or v0.1.0-3-gabc1234
+# between releases) so `mtha -version` identifies it.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+
 build:
-	go build ./cmd/mtha
+	go build -ldflags "-X main.version=$(VERSION)" ./cmd/mtha

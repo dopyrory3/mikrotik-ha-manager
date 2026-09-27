@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The release workflow calls this so a tag is gated on the same checks.
+  workflow_call:
 
 jobs:
   test:

@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/debug"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -15,6 +16,10 @@ import (
 	"mtha/internal/routeros"
 	"mtha/internal/ui"
 )
+
+// version is the release this binary was built from. Release builds and
+// `make build` set it with -ldflags "-X main.version=<tag>".
+var version = "dev"
 
 func main() {
 	if err := run(); err != nil {
@@ -29,6 +34,7 @@ func run() error {
 		pairName   string
 		write      bool
 		initConfig bool
+		showVer    bool
 	)
 
 	defaultPath, err := config.DefaultPath()
@@ -40,7 +46,13 @@ func run() error {
 	flag.StringVar(&pairName, "pair", "", "pair name (required if the config defines more than one)")
 	flag.BoolVar(&write, "write", false, "allow write operations (sync, deploy, failover); default is read-only")
 	flag.BoolVar(&initConfig, "init", false, "write a commented sample pair file to -config and exit")
+	flag.BoolVar(&showVer, "version", false, "print the mtha version and exit")
 	flag.Parse()
+
+	if showVer {
+		fmt.Println("mtha", buildVersion())
+		return nil
+	}
 
 	if initConfig {
 		if err := config.WriteSample(configPath); err != nil {
@@ -80,6 +92,18 @@ func run() error {
 	program := tea.NewProgram(model)
 	_, err = program.Run()
 	return err
+}
+
+// buildVersion is the stamped version, falling back to the module version
+// Go records for `go install mtha/cmd/mtha@<tag>` builds, which skip ldflags.
+func buildVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return version
 }
 
 func buildPollers(pair *config.Pair) (map[poll.RouterKey]*poll.Poller, error) {
