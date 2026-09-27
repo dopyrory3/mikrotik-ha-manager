@@ -1,6 +1,7 @@
 // Package ui holds the Bubble Tea root model and per-screen views.
 // Milestones 1-2-4 ship the Overview, Drift and Runtime screens (project.md
-// §9); Apply, Failover and Events from §7.1 land in later milestones.
+// §9) and milestone 6 the Events screen; Apply and Failover from §7.1 land in
+// later milestones.
 package ui
 
 import (
@@ -11,8 +12,10 @@ import (
 
 	"mtha/internal/config"
 	"mtha/internal/diff"
+	"mtha/internal/events"
 	"mtha/internal/model"
 	"mtha/internal/poll"
+	"mtha/internal/routeros"
 	"mtha/internal/runtime"
 )
 
@@ -26,6 +29,7 @@ const (
 	screenOverview screenID = iota
 	screenDrift
 	screenRuntime
+	screenEvents
 )
 
 // runtimeActionKind identifies which of the Runtime screen's two write
@@ -71,6 +75,15 @@ type Model struct {
 	runtimeErr      error
 	runtimePending  *pendingRuntimeAction
 
+	// journal records the tool's own actions for the Events timeline
+	// (project.md §5.7). It is a pointer so every copy of Model shares it;
+	// later milestones' actions feed it through events.Recorder.
+	journal        *events.Journal
+	eventsLogs     map[poll.RouterKey]routeros.EventLog
+	eventsErrs     map[poll.RouterKey]error
+	eventsFetching bool
+	eventsScroll   int
+
 	width, height int
 	quitting      bool
 }
@@ -91,6 +104,7 @@ func New(pair *config.Pair, writeMode bool, pollers map[poll.RouterKey]*poll.Pol
 		pollers:       pollers,
 		snapshots:     make(map[poll.RouterKey]poll.Snapshot),
 		driftSections: driftSections,
+		journal:       events.NewJournal(),
 	}
 }
 
@@ -155,10 +169,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case runtimeActionMsg:
+		m.journal.Record(runtimeActionEvent(msg))
 		m.runtimeFetching = false
 		m.runtimeErr = msg.result.Err
 		m.runtimeStatus = msg.result.Status
 		return m, nil
+
+	case eventsResultMsg:
+		return m.applyEventsResult(msg), nil
 
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -189,12 +207,17 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "3":
 		return m.enterRuntimeScreen()
 
+	case "6":
+		return m.enterEventsScreen()
+
 	case "tab":
 		switch m.screen {
 		case screenOverview:
 			return m.enterDriftScreen()
 		case screenDrift:
 			return m.enterRuntimeScreen()
+		case screenRuntime:
+			return m.enterEventsScreen()
 		default:
 			m.screen = screenOverview
 			return m, nil
@@ -206,6 +229,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleDriftKey(msg)
 	case screenRuntime:
 		return m.handleRuntimeKey(msg)
+	case screenEvents:
+		return m.handleEventsKey(msg)
 	}
 	return m, nil
 }
@@ -227,6 +252,8 @@ func (m Model) View() string {
 		return renderDrift(m)
 	case screenRuntime:
 		return renderRuntime(m)
+	case screenEvents:
+		return renderEvents(m)
 	default:
 		return renderDashboard(m)
 	}
