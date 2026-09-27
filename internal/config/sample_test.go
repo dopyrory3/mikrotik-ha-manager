@@ -72,3 +72,28 @@ func TestWriteSampleRefusesOverwrite(t *testing.T) {
 		t.Errorf("existing file was modified: %q", data)
 	}
 }
+
+func TestWriteSampleReportsStatError(t *testing.T) {
+	// A path "under" a regular file fails to stat with ENOTDIR, which is
+	// not "does not exist" and so must not be treated as free to write.
+	parent := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(parent, nil, 0o600); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	if err := WriteSample(filepath.Join(parent, "pairs.yaml")); err == nil {
+		t.Fatal("WriteSample under a regular file succeeded, want error")
+	}
+}
+
+func TestWriteSampleReportsWriteError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := filepath.Join(t.TempDir(), "ro")
+	if err := os.Mkdir(dir, 0o500); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := WriteSample(filepath.Join(dir, "pairs.yaml")); err == nil {
+		t.Fatal("WriteSample into a read-only directory succeeded, want error")
+	}
+}
