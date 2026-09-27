@@ -265,34 +265,35 @@ func TestBuildNeverWritesVRRPRoleFlags(t *testing.T) {
 	}
 }
 
-// Current behaviour, recorded for docs/design-questions.md (question 1):
-// comment-first identity applies to name-keyed sections too, so a user
-// whose comment differs between the routers is two unrelated hunks. Syncing
-// both A→B deletes the user on B and skips the create (REST can't read the
-// password), leaving B without the user.
-func TestBuildUserCommentChangeDeletesWithoutRecreate(t *testing.T) {
+// A user whose comment differs between the routers is one changed hunk,
+// since users are identified by name, not by comment (docs/design-questions.md
+// question 1). Syncing it A→B patches the comment on B's user in place: it
+// must never delete the user, because the create that would follow is
+// skipped (REST can't read the password) and B would be left without it.
+func TestBuildUserCommentChangePatchesInPlace(t *testing.T) {
 	a := []model.Entry{{".id": "*1", "name": "ops", "group": "full", "comment": "on-call"}}
 	b := []model.Entry{{".id": "*7", "name": "ops", "group": "full", "comment": "ops team"}}
 
 	p := Build([]SectionInput{{
 		Section: "user", A: a, B: b,
-		Choices: choose(AtoB, "on-call", "ops team"),
+		Choices: choose(AtoB, "ops"),
 	}}, Options{BackupName: "bk", Users: map[string]string{"a": "admin", "b": "admin"}})
 
-	var deletes []string
+	var writes []string
 	for _, op := range p.Ops {
-		if op.Method == MethodDelete {
-			deletes = append(deletes, op.Router+" "+op.Path)
-		}
-		if op.Method == MethodCreate {
-			t.Errorf("unexpected create %s %s", op.Router, op.Path)
+		switch op.Method {
+		case MethodDelete, MethodCreate:
+			t.Errorf("%s would drop or recreate the user: %s", op.Method, op)
+		case MethodUpdate:
+			writes = append(writes, op.Router+" "+op.String())
 		}
 	}
-	if len(deletes) != 1 || deletes[0] != "b /user/*7" {
-		t.Errorf("deletes = %v, want [b /user/*7]", deletes)
+	want := `b PATCH /user/*7 {"comment":"on-call"}`
+	if len(writes) != 1 || writes[0] != want {
+		t.Errorf("updates = %v, want [%s]", writes, want)
 	}
-	if len(p.Skipped) != 1 || p.Skipped[0].Ref.Identity != "on-call" {
-		t.Errorf("skipped = %+v, want the create of on-call", p.Skipped)
+	if len(p.Skipped) != 0 {
+		t.Errorf("skipped = %+v, want none", p.Skipped)
 	}
 }
 
@@ -381,8 +382,12 @@ func TestBuildWarnsAboutMissingReferents(t *testing.T) {
 	server := func(id, name, pool string) model.Entry {
 		return model.Entry{".id": id, "name": name, "interface": "bridge", "address-pool": pool}
 	}
+	// A lease is identified by server|mac-address, so a lease whose server
+	// differs is a remove plus a create, never a changed field: the check
+	// sees its server in a create body. (The PATCH path is exercised by the
+	// user group case below.)
 	lease := func(id, mac, srv string) model.Entry {
-		return model.Entry{".id": id, "mac-address": mac, "address": "10.0.0.5", "server": srv, "comment": "lease-" + mac}
+		return model.Entry{".id": id, "mac-address": mac, "address": "10.0.0.5", "server": srv}
 	}
 	pools := map[Read][]model.Entry{
 		{Router: "b", Section: "ip/pool"}:   {{".id": "*1", "name": "pool-lan"}},
@@ -398,55 +403,66 @@ func TestBuildWarnsAboutMissingReferents(t *testing.T) {
 		{
 			name: "lease naming a server the target lacks",
 			inputs: []SectionInput{
-				{Section: "ip/dhcp-server/lease", A: []model.Entry{lease("*1", "AA", "dhcp-guest")}, Choices: choose(AtoB, "lease-AA")},
+				{Section: "ip/dhcp-server/lease", A: []model.Entry{lease("*1", "AA", "dhcp-guest")}, Choices: choose(AtoB, "dhcp-guest|AA")},
 			},
 			referents: map[Read][]model.Entry{{Router: "b", Section: "ip/dhcp-server"}: {server("*1", "dhcp-lan", "pool-lan")}},
-			want:      []string{`ip/dhcp-server/lease lease-AA [router B]: server=dhcp-guest names ip/dhcp-server name "dhcp-guest", which router B does not have and this plan does not create first`},
+			want:      []string{`ip/dhcp-server/lease dhcp-guest|AA [router B]: server=dhcp-guest names ip/dhcp-server name "dhcp-guest", which router B does not have and this plan does not create first`},
+		},
+		{
+			name: "lease moved to a server the target lacks: remove plus create",
+			inputs: []SectionInput{{
+				Section: "ip/dhcp-server/lease",
+				A:       []model.Entry{lease("*1", "AA", "dhcp-guest")},
+				B:       []model.Entry{lease("*4", "AA", "dhcp-lan")},
+				Choices: choose(AtoB, "dhcp-guest|AA", "dhcp-lan|AA"),
+			}},
+			referents: map[Read][]model.Entry{{Router: "b", Section: "ip/dhcp-server"}: {server("*1", "dhcp-lan", "pool-lan")}},
+			want:      []string{`ip/dhcp-server/lease dhcp-guest|AA [router B]: server=dhcp-guest names ip/dhcp-server name "dhcp-guest", which router B does not have and this plan does not create first`},
 		},
 		{
 			name: "lease naming a server the target has",
 			inputs: []SectionInput{
 				{Section: "ip/dhcp-server", A: []model.Entry{server("*1", "dhcp-lan", "pool-lan")}, B: []model.Entry{server("*9", "dhcp-lan", "pool-lan")}},
-				{Section: "ip/dhcp-server/lease", A: []model.Entry{lease("*1", "AA", "dhcp-lan")}, Choices: choose(AtoB, "lease-AA")},
+				{Section: "ip/dhcp-server/lease", A: []model.Entry{lease("*1", "AA", "dhcp-lan")}, Choices: choose(AtoB, "dhcp-lan|AA")},
 			},
 		},
 		{
 			name: "server created earlier in the plan",
 			inputs: []SectionInput{
 				{Section: "ip/dhcp-server", A: []model.Entry{server("*1", "dhcp-guest", "pool-lan")}, Choices: choose(AtoB, "dhcp-guest")},
-				{Section: "ip/dhcp-server/lease", A: []model.Entry{lease("*1", "AA", "dhcp-guest")}, Choices: choose(AtoB, "lease-AA")},
+				{Section: "ip/dhcp-server/lease", A: []model.Entry{lease("*1", "AA", "dhcp-guest")}, Choices: choose(AtoB, "dhcp-guest|AA")},
 			},
 			referents: pools,
 		},
 		{
 			name: "server created later in the plan",
 			inputs: []SectionInput{
-				{Section: "ip/dhcp-server/lease", A: []model.Entry{lease("*1", "AA", "dhcp-guest")}, Choices: choose(AtoB, "lease-AA")},
+				{Section: "ip/dhcp-server/lease", A: []model.Entry{lease("*1", "AA", "dhcp-guest")}, Choices: choose(AtoB, "dhcp-guest|AA")},
 				{Section: "ip/dhcp-server", A: []model.Entry{server("*1", "dhcp-guest", "pool-lan")}, Choices: choose(AtoB, "dhcp-guest")},
 			},
 			referents: pools,
-			want:      []string{`ip/dhcp-server/lease lease-AA [router B]: server=dhcp-guest names ip/dhcp-server name "dhcp-guest", which this plan only creates later (op 3)`},
+			want:      []string{`ip/dhcp-server/lease dhcp-guest|AA [router B]: server=dhcp-guest names ip/dhcp-server name "dhcp-guest", which this plan only creates later (op 3)`},
 		},
 		{
 			name: "half-selection: the server's create is not selected",
 			inputs: []SectionInput{
 				{Section: "ip/dhcp-server", A: []model.Entry{server("*1", "dhcp-guest", "pool-lan")}},
-				{Section: "ip/dhcp-server/lease", A: []model.Entry{lease("*1", "AA", "dhcp-guest")}, Choices: choose(AtoB, "lease-AA")},
+				{Section: "ip/dhcp-server/lease", A: []model.Entry{lease("*1", "AA", "dhcp-guest")}, Choices: choose(AtoB, "dhcp-guest|AA")},
 			},
-			want: []string{`ip/dhcp-server/lease lease-AA [router B]: server=dhcp-guest names ip/dhcp-server name "dhcp-guest", which router B does not have and this plan does not create first`},
+			want: []string{`ip/dhcp-server/lease dhcp-guest|AA [router B]: server=dhcp-guest names ip/dhcp-server name "dhcp-guest", which router B does not have and this plan does not create first`},
 		},
 		{
 			name: "server removed earlier in the plan",
 			inputs: []SectionInput{
 				{Section: "ip/dhcp-server", B: []model.Entry{server("*9", "dhcp-old", "pool-lan")}, Choices: choose(AtoB, "dhcp-old")},
-				{Section: "ip/dhcp-server/lease", A: []model.Entry{lease("*1", "AA", "dhcp-old")}, Choices: choose(AtoB, "lease-AA")},
+				{Section: "ip/dhcp-server/lease", A: []model.Entry{lease("*1", "AA", "dhcp-old")}, Choices: choose(AtoB, "dhcp-old|AA")},
 			},
-			want: []string{`ip/dhcp-server/lease lease-AA [router B]: server=dhcp-old names ip/dhcp-server name "dhcp-old", which this plan removes first`},
+			want: []string{`ip/dhcp-server/lease dhcp-old|AA [router B]: server=dhcp-old names ip/dhcp-server name "dhcp-old", which this plan removes first`},
 		},
 		{
 			name: "lease server all names nothing",
 			inputs: []SectionInput{
-				{Section: "ip/dhcp-server/lease", A: []model.Entry{lease("*1", "AA", "all")}, Choices: choose(AtoB, "lease-AA")},
+				{Section: "ip/dhcp-server/lease", A: []model.Entry{lease("*1", "AA", "all")}, Choices: choose(AtoB, "all|AA")},
 			},
 		},
 		{
@@ -558,7 +574,7 @@ func TestReferenceReads(t *testing.T) {
 		{
 			name: "no reference fields",
 			inputs: []SectionInput{
-				{Section: "ip/dns/static", A: []model.Entry{{".id": "*1", "name": "nas", "address": "10.0.0.5"}}, Choices: choose(AtoB, "nas|A|10.0.0.5", "10.0.0.5", "nas")},
+				{Section: "ip/dns/static", A: []model.Entry{{".id": "*1", "name": "nas", "address": "10.0.0.5"}}, Choices: choose(AtoB, "nas|A|10.0.0.5")},
 			},
 		},
 		{
@@ -572,7 +588,7 @@ func TestReferenceReads(t *testing.T) {
 			name: "unsynced and unselected referents, on the target",
 			inputs: []SectionInput{
 				{Section: "ip/dhcp-server", B: []model.Entry{{".id": "*1", "name": "dhcp-guest", "interface": "bridge", "address-pool": "pool-guest"}}, Choices: choose(BtoA, "dhcp-guest")},
-				{Section: "ip/dhcp-server/lease", B: []model.Entry{{".id": "*1", "mac-address": "AA", "server": "dhcp-guest", "comment": "l"}}, Choices: choose(BtoA, "l")},
+				{Section: "ip/dhcp-server/lease", B: []model.Entry{{".id": "*1", "mac-address": "AA", "server": "dhcp-guest"}}, Choices: choose(BtoA, "dhcp-guest|AA")},
 				{Section: "user", A: []model.Entry{{".id": "*1", "name": "ops", "group": "read"}}, B: []model.Entry{{".id": "*1", "name": "ops", "group": "noc"}}, Choices: choose(BtoA, "ops")},
 			},
 			want: []Read{{Router: "a", Section: "ip/pool"}, {Router: "a", Section: "interface"}, {Router: "a", Section: "user/group"}},
