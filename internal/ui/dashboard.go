@@ -115,7 +115,7 @@ func routerPanel(title string, router config.RouterConfig, snap poll.Snapshot, h
 }
 
 func statusLine(m Model) string {
-	return fmt.Sprintf(" %s | %s | 2: drift, 3: runtime, 4: apply, q: quit ", m.pair.Name, modeLabel(m.writeMode))
+	return fmt.Sprintf(" %s | %s | 2: drift, 3: runtime, 4: apply, 6: events, q: quit ", m.pair.Name, modeLabel(m.writeMode))
 }
 
 // modeLabel is the read/write mode as the status bar shows it (project.md

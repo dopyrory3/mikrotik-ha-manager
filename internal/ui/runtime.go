@@ -20,6 +20,7 @@ type runtimeVerifyMsg struct {
 
 // runtimeActionMsg carries the outcome of a confirmed deploy or remove.
 type runtimeActionMsg struct {
+	kind   runtimeActionKind
 	result runtime.Result
 }
 
@@ -68,7 +69,7 @@ func (m Model) startRuntimeAction(kind runtimeActionKind) (tea.Model, tea.Cmd) {
 		} else {
 			result = runtime.Remove(ctx, clientA, clientB, plans)
 		}
-		return runtimeActionMsg{result: result}
+		return runtimeActionMsg{kind: kind, result: result}
 	}
 }
 
@@ -136,7 +137,7 @@ func renderRuntime(m Model) string {
 	}
 
 	b.WriteString("\n\n")
-	hint := "r: refresh, d: deploy, x: remove, tab: apply, q: quit"
+	hint := "r: refresh, d: deploy, x: remove, tab: apply, 6: events, q: quit"
 	if m.runtimePending != nil {
 		hint = "y: confirm, n/esc: cancel"
 	}

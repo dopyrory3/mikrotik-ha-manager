@@ -161,6 +161,46 @@ updated with the result. Press `r` to re-plan.
 
 Long plans scroll with `j`/`k`.
 
+### Events
+
+Press `6` (or `tab` from Apply) to open it. Both routers' logs are re-read
+every time you enter the screen; press `r` to re-read them while on it.
+
+Events is a single timeline, newest first, merging:
+
+- **Router A and router B logs** (`/log`), filtered to entries with the
+  `vrrp` or `netwatch` topic, and entries whose message starts with `mtha:`
+  (written by the on-master/on-backup scripts Runtime deploys).
+- **The tool's own actions** from this session, shown with source `tool`.
+  Today that is Runtime deploy/remove. The Apply screen's operations are not
+  fed into the journal yet, and failover actions will follow once that
+  milestone lands. A failed action's kind is shown in red with its error
+  appended.
+
+| Column | Meaning |
+| --- | --- |
+| `time` | When it happened, in this machine's local time |
+| `src` | `A`, `B`, or `tool` |
+| `kind` | `vrrp`, `netwatch` or `mtha` for router entries; `sync`, `failover` or `runtime` for tool actions |
+| `message` | The log message or action summary, truncated to fit |
+
+Above the timeline, one line per router shows how many events were read and
+when, or the error if its log couldn't be read. A router that fails keeps the
+events from its last successful read.
+
+Router log timestamps are local wall-clock strings, often without a date or
+year. `mtha` reads each router's clock straight after its log and places every
+entry relative to that, so both routers and the tool's actions line up on this
+machine's clock even when the routers' clocks are wrong or in different time
+zones. The cost is up to about a second of jitter between routers (RouterOS
+logs have 1-second resolution). If a router's clock is more than 3 seconds off
+this machine's, the router line says so: worth fixing with NTP on an HA pair,
+even though the timeline already corrects for it.
+
+Only what is still in each router's in-memory log is shown (RouterOS keeps
+1000 lines by default, across all topics). Nothing is saved to disk: tool
+actions are forgotten when you quit.
+
 ## Keybindings
 
 Global, on any screen:
@@ -171,7 +211,8 @@ Global, on any screen:
 | `2` | Drift |
 | `3` | Runtime |
 | `4` | Apply |
-| `tab` | Cycle Overview → Drift → Runtime → Apply → Overview |
+| `6` | Events |
+| `tab` | Cycle Overview → Drift → Runtime → Apply → Events → Overview |
 | `q`, `ctrl+c` | Quit |
 
 Drift screen:
@@ -206,6 +247,16 @@ Apply screen:
 | `Y` | Second confirmation when writing to the current VRRP master |
 | `n`, `esc` | Cancel a pending confirmation |
 | `up`, `k` / `down`, `j` | Scroll the plan |
+
+Events screen:
+
+| Key | Action |
+| --- | --- |
+| `r` | Re-read both routers' logs |
+| `down`, `j` | Scroll towards older events |
+| `up`, `k` | Scroll towards newer events |
+| `g` | Jump to the newest event |
+| `G` | Jump to the oldest event |
 
 There is no in-app help overlay yet (`?` is not wired up); this document is
 the keybinding reference.

@@ -1,4 +1,5 @@
 /bin/
 /dist/
+/mtha
 *.rsc
 .DS_Store
