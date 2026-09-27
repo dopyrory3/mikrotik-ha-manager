@@ -196,3 +196,47 @@ func TestBuildIdentitiesRoutePrefersTagComment(t *testing.T) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
 }
+
+// Current behaviour, recorded for docs/design-questions.md (question 1): a
+// DNS record with no address (a CNAME) falls to the bare section ordinal, so
+// inserting another address-less record ahead of it re-identifies it.
+func TestBuildIdentitiesDNSStaticCNAMEIsPositional(t *testing.T) {
+	before := []Entry{
+		{"name": "svc.example", "type": "A", "address": "192.0.2.10"},
+		{"name": "www.example", "type": "CNAME", "cname": "svc.example"},
+	}
+	after := []Entry{
+		{"name": "mail.example", "type": "CNAME", "cname": "svc.example"},
+		{"name": "svc.example", "type": "A", "address": "192.0.2.10"},
+		{"name": "www.example", "type": "CNAME", "cname": "svc.example"},
+	}
+	if got, want := BuildIdentities("ip/dns/static", before), []string{"192.0.2.10", "#1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("before: got %v, want %v", got, want)
+	}
+	if got, want := BuildIdentities("ip/dns/static", after), []string{"#1", "192.0.2.10", "#2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("after: got %v, want %v", got, want)
+	}
+}
+
+// Current behaviour, recorded for docs/design-questions.md (question 1):
+// comment wins over a section's natural key, so entries sharing a comment
+// are told apart only by encounter order. Inserting one more entry with that
+// comment at the front re-identifies every later one, even though list and
+// address would have identified each of them uniquely.
+func TestBuildIdentitiesSharedCommentOverridesNaturalKey(t *testing.T) {
+	before := []Entry{
+		{"list": "blocked", "address": "198.51.100.1", "comment": "feed"},
+		{"list": "blocked", "address": "198.51.100.2", "comment": "feed"},
+	}
+	after := []Entry{
+		{"list": "blocked", "address": "198.51.100.9", "comment": "feed"},
+		{"list": "blocked", "address": "198.51.100.1", "comment": "feed"},
+		{"list": "blocked", "address": "198.51.100.2", "comment": "feed"},
+	}
+	if got, want := BuildIdentities("ip/firewall/address-list", before), []string{"feed", "feed#2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("before: got %v, want %v", got, want)
+	}
+	if got, want := BuildIdentities("ip/firewall/address-list", after), []string{"feed", "feed#2", "feed#3"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("after: got %v, want %v", got, want)
+	}
+}

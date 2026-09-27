@@ -56,7 +56,7 @@ pairs:
         - ip/address             # per-router interface addresses
         - ip/service.certificate # each router's own self-signed cert
         - ip/service.port        # router b's REST API (www-ssl) is on 8443
-        - user.last-logged-in    # updates independently on every login
+        - user.last-logged-in    # per-router; set by binary-API logins, not by REST
         # runtime.toggles below enables these on the master and disables
         # them on the standby, so "disabled" differs by design:
         - ip/dhcp-server.disabled
