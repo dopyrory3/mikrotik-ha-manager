@@ -1,0 +1,41 @@
+# The lab pair for the live-router suite (`make test-lab`), and a working
+# pair file for running mtha by hand against testlab/:
+#
+#   export MTHA_LAB_A_PASSWORD=London12 MTHA_LAB_B_PASSWORD=London12
+#   go run ./cmd/mtha -config testlab/pairs.yaml -pair lab
+#
+# internal/labtest refuses to run unless both routers here are exactly the
+# lab's endpoints (localhost:443 and localhost:8443, user admin), so this
+# file cannot be pointed at another router to run the suite against it.
+pairs:
+  - name: lab
+    routers:
+      a: { host: localhost, port: 443, user: admin, insecure_tls: true }
+      b: { host: localhost, port: 8443, user: admin, insecure_tls: true }
+    vrrp:
+      - interface: vrrp-lan
+        on: ether2
+        vrid: 1
+        addresses: [192.168.88.1/24]
+    sync:
+      # ip/firewall/filter first: the smoke test drives the drift screen
+      # to it without moving the section cursor.
+      sections:
+        - ip/firewall/filter
+        - ip/firewall/nat
+        - ip/firewall/address-list
+        - ip/dns/static
+        - ip/service
+        - system/script
+        - system/scheduler
+      exempt:
+        - system/identity
+        - interface/vrrp.priority
+        - ip/address
+        - ip/service.certificate
+        - ip/service.port
+    runtime:
+      netwatch_targets: [192.168.88.2, 192.168.88.3]
+      priority_master: 200
+      priority_backup: 100
+      priority_degraded: 50

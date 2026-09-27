@@ -1,4 +1,4 @@
-.PHONY: test test-race vet cover check build
+.PHONY: test test-race test-lab vet cover check build
 
 # The gate to run before every commit: unit tests plus the static checks CI
 # runs. Keeps local and CI behaviour identical.
@@ -10,6 +10,14 @@ test:
 # The poller and UI models use goroutines, so run the race detector in CI.
 test-race:
 	go test -race ./...
+
+# The live-router suite (internal/labtest): writes to the testlab/ pair and
+# resets it between tests, so it needs the lab up and provisioned first:
+#   docker compose -f testlab/docker-compose.yml up -d --build
+#   ./testlab/provision.sh
+# -p 1 runs one package's routers at a time (the harness also locks).
+test-lab:
+	MTHA_LAB=1 go test -tags lab -race -count=1 -p 1 -timeout 30m -v -run '^TestLab' ./...
 
 vet:
 	go vet ./...
