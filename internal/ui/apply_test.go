@@ -26,6 +26,9 @@ type fakeRouter struct {
 	writes   []string
 	failPath string // a write to this path returns 500
 	nextID   int
+	// perGet, if set, returns rows appended to one GET of a section and
+	// never stored, like ip/service's per-connection reverse-proxy rows.
+	perGet func(section string) []map[string]any
 }
 
 func newFakeRouter(sections map[string][]map[string]any) *fakeRouter {
@@ -39,6 +42,9 @@ func (f *fakeRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/rest/")
 	if r.Method == http.MethodGet {
 		entries := f.sections[path]
+		if f.perGet != nil {
+			entries = append(append([]map[string]any(nil), entries...), f.perGet(path)...)
+		}
 		if entries == nil {
 			entries = []map[string]any{}
 		}
@@ -103,9 +109,24 @@ func (f *fakeRouter) writeLog() []string {
 
 const filter = "ip/firewall/filter"
 
+// vrrpAs is one vrrp-lan instance in role ("master" or "backup") as the poller
+// decodes the device's payload: that role's flag is "true" and the other
+// flag is absent, never "false" (docs/lab-rest-contract.md).
+func vrrpAs(role string) []routeros.VRRPInstance {
+	v := routeros.VRRPInstance{Name: "vrrp-lan", Interface: "ether2"}
+	switch role {
+	case "master":
+		v.Master = "true"
+	case "backup":
+		v.Backup = "true"
+	}
+	return []routeros.VRRPInstance{v}
+}
+
 // applyFixture is a pair where router A has an "allow-dns" rule router B
-// lacks, with the drift hunk for it already selected A→B.
-func applyFixture(t *testing.T, writeMode bool, bVRRPState string) (Model, *fakeRouter, *fakeRouter) {
+// lacks, with the drift hunk for it already selected A→B. bRole is router
+// B's VRRP role; A is master.
+func applyFixture(t *testing.T, writeMode bool, bRole string) (Model, *fakeRouter, *fakeRouter) {
 	t.Helper()
 	ra := newFakeRouter(map[string][]map[string]any{filter: {
 		{".id": "*1", "chain": "input", "comment": "allow-dns", "action": "accept"},
@@ -122,8 +143,8 @@ func applyFixture(t *testing.T, writeMode bool, bVRRPState string) (Model, *fake
 	pair := &config.Pair{Name: "core", Sync: config.SyncConfig{Sections: []string{filter}}}
 	m := New(pair, writeMode, pollers)
 
-	m.snapshots["a"] = poll.Snapshot{Router: "a", VRRP: []routeros.VRRPInstance{{Name: "vrrp-lan", State: "master"}}}
-	m.snapshots["b"] = poll.Snapshot{Router: "b", VRRP: []routeros.VRRPInstance{{Name: "vrrp-lan", State: bVRRPState}}}
+	m.snapshots["a"] = poll.Snapshot{Router: "a", VRRP: vrrpAs("master")}
+	m.snapshots["b"] = poll.Snapshot{Router: "b", VRRP: vrrpAs(bRole)}
 	m.setSelection(filter, plan.HunkRef{Identity: "allow-dns"}, plan.AtoB)
 	return m, ra, rb
 }
@@ -254,20 +275,33 @@ func TestApplyUnknownVRRPStateRequiresSecondConfirmation(t *testing.T) {
 
 // The master check fails closed on the VRRP payload itself: only a target
 // whose every entry positively decodes as backup gets a single-y apply.
-// Payloads are decoded as the poller would decode them, in both the flag
-// and vrrp-state shapes.
+// Payloads are decoded as the poller would decode them.
+//
+// The first three are what RouterOS 7.23.7 sends (docs/lab-rest-contract.md):
+// one role flag, "true", the other key absent, and running:"false" on the
+// backup. The rest are deliberately hypothetical — no device capture backs
+// them — and keep the defensive paths covered: an entry with neither flag
+// (a disabled or init instance could plausibly look like this, but that was
+// not observable read-only), and the vrrp-state fallback, a field the
+// device does not send.
 func TestApplyMasterCheckFailsClosedOnVRRPPayload(t *testing.T) {
+	const (
+		master = `{".id":"*4","name":"vrrp-lan","interface":"ether2","vrid":"1","priority":"200","disabled":"false","invalid":"false","running":"true","master":"true"}`
+		backup = `{".id":"*4","name":"vrrp-lan","interface":"ether2","vrid":"1","priority":"100","disabled":"false","invalid":"false","running":"false","backup":"true"}`
+	)
 	cases := []struct {
 		name        string
 		payload     string
 		wantConfirm bool
 	}{
-		{"flag master", `[{"name":"vrrp-lan","master":"true","backup":"false"}]`, true},
-		{"flag backup", `[{"name":"vrrp-lan","master":"false","backup":"true"}]`, false},
-		{"vrrp-state backup", `[{"name":"vrrp-lan","vrrp-state":"backup"}]`, false},
-		{"no role reported", `[{"name":"vrrp-lan","running":"true"}]`, true},
-		{"one entry unknown", `[{"name":"vrrp-lan","backup":"true"},{"name":"vrrp-wan","vrrp-state":"init"}]`, true},
+		{"device master", "[" + master + "]", true},
+		{"device backup", "[" + backup + "]", false},
 		{"no vrrp entries", `[]`, true},
+
+		{"hypothetical: no role reported", `[{"name":"vrrp-lan","running":"false","disabled":"true"}]`, true},
+		{"hypothetical: one entry unknown", "[" + backup + `,{"name":"vrrp-wan","running":"false","disabled":"true"}]`, true},
+		{"hypothetical: vrrp-state backup", `[{"name":"vrrp-lan","vrrp-state":"backup"}]`, false},
+		{"hypothetical: vrrp-state init", "[" + backup + `,{"name":"vrrp-wan","vrrp-state":"init"}]`, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -291,6 +325,79 @@ func TestApplyMasterCheckFailsClosedOnVRRPPayload(t *testing.T) {
 				t.Fatalf("stage = %v writes = %v, want a single-y apply to a positive backup", m.apply.stage, rb.writeLog())
 			}
 		})
+	}
+}
+
+// ip/service on the device (docs/lab-rest-contract.md) is not a fixed list:
+// alongside the static built-ins it returns dynamic rows, including one
+// reverse-proxy row per open HTTPS connection whose .id and remote change on
+// every request. Those must be dropped before diffing, or mtha's own polling
+// would show up as drift that never resolves. telnet is *0 on the device, a
+// real id the PATCH must address.
+func TestApplyIgnoresDynamicServiceRows(t *testing.T) {
+	static := func(id, name, port, disabled string) map[string]any {
+		return map[string]any{".id": id, "name": name, "port": port, "proto": "tcp", "address": "",
+			"disabled": disabled, "dynamic": "false", "invalid": "false", "max-sessions": "20", "vrf": "main"}
+	}
+	dynamic := func(id, name, port string) map[string]any {
+		return map[string]any{".id": id, "name": name, "port": port, "proto": "tcp",
+			"disabled": "false", "dynamic": "true", "invalid": "false"}
+	}
+	const svc = "ip/service"
+	ra := newFakeRouter(map[string][]map[string]any{svc: {
+		static("*0", "telnet", "23", "true"),
+		static("*2", "ssh", "22", "false"),
+		dynamic("*B", "btest", "2000"),
+	}})
+	rb := newFakeRouter(map[string][]map[string]any{svc: {
+		static("*0", "telnet", "23", "false"),
+		static("*2", "ssh", "22", "false"),
+		dynamic("*C", "dhcpclient", "68"),
+	}})
+	// Each GET sees a fresh connection row, as the REST client's own request
+	// is listed in the response it reads. The .id counter only increases.
+	conn := 0x10
+	connections := func(section string) []map[string]any {
+		if section != svc {
+			return nil
+		}
+		conn++
+		row := dynamic(fmt.Sprintf("*%X", conn), "reverse-proxy", "443")
+		row["connection"] = "true"
+		row["local"] = "172.17.0.2:443"
+		row["remote"] = fmt.Sprintf("172.17.0.1:%d", 50000+conn)
+		return []map[string]any{row}
+	}
+	ra.perGet, rb.perGet = connections, connections
+
+	pollers := map[poll.RouterKey]*poll.Poller{
+		"a": poll.New("a", testClient(t, ra), pollInterval),
+		"b": poll.New("b", testClient(t, rb), pollInterval),
+	}
+	pair := &config.Pair{Name: "core", Sync: config.SyncConfig{Sections: []string{svc}}}
+	m := New(pair, true, pollers)
+	m.snapshots["a"] = poll.Snapshot{Router: "a", VRRP: vrrpAs("master")}
+	m.snapshots["b"] = poll.Snapshot{Router: "b", VRRP: vrrpAs("backup")}
+	m.setSelection(svc, plan.HunkRef{Identity: "telnet"}, plan.AtoB)
+
+	m = drive(t, m, key("4"))
+	if m.apply.stage != applyReview {
+		t.Fatalf("stage = %v, want review (err %v)", m.apply.stage, m.apply.err)
+	}
+	if ops := m.apply.plan.Ops; len(ops) != 2 || ops[1].Path != "/ip/service/*0" || ops[1].Body["disabled"] != "true" || len(ops[1].Body) != 1 {
+		t.Fatalf("want the backup and one PATCH of telnet's disabled at *0:\n%s", m.apply.plan.Render())
+	}
+	if len(m.apply.plan.Skipped) != 0 {
+		t.Fatalf("dynamic rows should not reach the plan:\n%s", m.apply.plan.Render())
+	}
+
+	m = drive(t, m, key("y"))
+	want := []string{"POST /system/backup/save", "PATCH /ip/service/*0"}
+	if got := rb.writeLog(); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("router b writes = %v, want %v", got, want)
+	}
+	if sd := m.apply.residual[svc]; !sd.Clean() {
+		t.Fatalf("dynamic service rows read as drift: %+v", sd.Hunks)
 	}
 }
 
