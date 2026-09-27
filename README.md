@@ -16,11 +16,11 @@ depends on `mtha` running — VRRP, netwatch and the scripts that adjust
 priority all live on the routers themselves. The tool is for designing,
 deploying, verifying, syncing and rehearsing.
 
-> **Status: early.** Milestones 1–4 are built: Overview, Drift, Runtime (VRRP
-> interface provisioning, netwatch/on-master/on-backup/scheduler automation)
-> and Apply (selective sync with dry run, backup and verification). Planned
-> failover and the events timeline are not implemented yet. See
-> [Status](#status) below.
+> **Status: early.** Milestones 1–4 and 6 are built: Overview, Drift, Runtime
+> (VRRP interface provisioning, netwatch/on-master/on-backup/scheduler
+> automation), Apply (selective sync with dry run, backup and verification),
+> and Events (merged router log and tool-action timeline). Planned failover is
+> the remaining milestone. See [Status](#status) below.
 
 ## Requirements
 
@@ -36,7 +36,7 @@ binary API on ports 8728/8729.
 ## Install
 
 ```sh
-git clone <repo> && cd dagon
+git clone <repo> && cd mikrotik-ha-manager
 go build ./cmd/mtha        # or: make build
 ```
 
@@ -63,8 +63,9 @@ mtha
 
 The session opens on the **Overview** screen: side-by-side status for both
 routers plus a single readiness verdict. Press `2` for **Drift**, `3` for
-**Runtime**, `4` for **Apply**: select hunks on Drift (`space`, or `a`/`b` for
-a whole section), then review and run the plan on Apply.
+**Runtime**, `4` for **Apply**, `6` for **Events**, or `?` for help on any
+screen: select hunks on Drift (`space`, or `a`/`b` for a whole section), then
+review and run the plan on Apply.
 
 See [docs/usage.md](docs/usage.md) for screens and keybindings, and
 [docs/configuration.md](docs/configuration.md) for the pair file reference.
@@ -103,8 +104,8 @@ See [docs/usage.md](docs/usage.md) for screens and keybindings, and
 | 3. Apply | Planner, dry run, backup, apply, verify | Done |
 | 4. Runtime | Templates, deploy, verify, remove | Done |
 | 5. Failover | Pre-flight, action, live view, VIP probe | Not started |
-| 6. Events | Log merge, timeline | Not started |
-| 7. Polish | In-app help | Not started |
+| 6. Events | Log merge, timeline | Done |
+| 7. Polish | In-app help | Done |
 
 Multi-pair (a pair picker screen) and a GoReleaser release pipeline are
 dropped from scope (project.md §10.1). A pair file may still define several
