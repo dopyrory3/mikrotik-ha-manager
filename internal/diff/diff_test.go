@@ -123,3 +123,72 @@ func TestCompareFirewallUsesChainOrdinalWhenNoComment(t *testing.T) {
 		t.Fatalf("expected identity input#2, got %q", sd.Hunks[0].Identity)
 	}
 }
+
+func TestCompareCollisionReportsOccurrence(t *testing.T) {
+	a := []model.Entry{
+		{"list": "blocklist", "address": "10.0.0.5", "timeout": "1h"},
+		{"list": "blocklist", "address": "10.0.0.5", "timeout": "2h"},
+	}
+	b := []model.Entry{
+		{"list": "blocklist", "address": "10.0.0.5", "timeout": "1h"},
+	}
+
+	sd := Compare("ip/firewall/address-list", a, b, nil)
+	if len(sd.Hunks) != 1 || sd.Hunks[0].Occurrence != 1 || !sd.Hunks[0].OnA || sd.Hunks[0].OnB {
+		t.Fatalf("expected one only-on-A hunk at occurrence 1, got %+v", sd.Hunks)
+	}
+}
+
+// Two rules sharing a comment used to collapse onto one identity; after
+// dedupe each is matched (and reported) individually.
+func TestCompareDisambiguatesDuplicateComments(t *testing.T) {
+	a := []model.Entry{
+		{"chain": "forward", "comment": "web", "dst-port": "80"},
+		{"chain": "forward", "comment": "web", "dst-port": "443"},
+	}
+	b := []model.Entry{
+		{"chain": "forward", "comment": "web", "dst-port": "80"},
+		{"chain": "forward", "comment": "web", "dst-port": "8443"},
+	}
+
+	sd := Compare("ip/firewall/filter", a, b, nil)
+	if len(sd.Hunks) != 1 || sd.Hunks[0].Identity != "web#2" || sd.Hunks[0].Occurrence != 0 {
+		t.Fatalf("expected a single change on web#2, got %+v", sd.Hunks)
+	}
+}
+
+// Inserting an uncommented rule after "allow-ssh" re-identifies only that
+// block: the rule after "drop-rest" still matches and produces no hunk.
+func TestCompareAnchoredInsertionIsLocal(t *testing.T) {
+	a := []model.Entry{
+		{"chain": "input", "comment": "allow-ssh", "action": "accept"},
+		{"chain": "input", "action": "accept", "protocol": "icmp"},
+		{"chain": "input", "comment": "drop-rest", "action": "drop"},
+		{"chain": "input", "action": "log"},
+	}
+	b := []model.Entry{
+		{"chain": "input", "comment": "allow-ssh", "action": "accept"},
+		{"chain": "input", "comment": "drop-rest", "action": "drop"},
+		{"chain": "input", "action": "log"},
+	}
+
+	sd := Compare("ip/firewall/filter", a, b, nil)
+	if len(sd.Hunks) != 1 || sd.Hunks[0].Identity != "input@allow-ssh#1" || !sd.Hunks[0].OnA || sd.Hunks[0].OnB {
+		t.Fatalf("expected only the inserted rule to differ, got %+v", sd.Hunks)
+	}
+}
+
+func TestCompareIgnoresUntaggedRoutes(t *testing.T) {
+	a := []model.Entry{
+		{"dst-address": "0.0.0.0/0", "gateway": "203.0.113.1"},
+		{"dst-address": "10.9.0.0/16", "gateway": "10.0.0.9", "comment": "mtha:vpn"},
+	}
+	b := []model.Entry{
+		{"dst-address": "0.0.0.0/0", "gateway": "198.51.100.1"},
+	}
+
+	sd := Compare("ip/route", a, b, nil)
+	if len(sd.Hunks) != 1 || sd.Hunks[0].Identity != "mtha:vpn" {
+		t.Fatalf("expected only the tagged route to be diffed, got %+v", sd.Hunks)
+	}
+}

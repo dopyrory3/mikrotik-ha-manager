@@ -11,9 +11,16 @@ import "mtha/internal/model"
 // within a section.
 type Hunk struct {
 	Identity string
-	OnA      bool
-	OnB      bool
-	Changes  []model.FieldChange // only set when OnA && OnB
+	// Occurrence is the 0-based position of the matched entry among the
+	// entries sharing Identity on the same router. It is almost always 0
+	// (comment dedupe makes identities unique for commented entries); it
+	// matters only when a per-section fallback key collides, e.g. two
+	// address-list entries with the same list and address. Identity plus
+	// Occurrence is what the planner uses to find the exact entry to write.
+	Occurrence int
+	OnA        bool
+	OnB        bool
+	Changes    []model.FieldChange // only set when OnA && OnB
 }
 
 // SectionDiff is the full set of differences for one config section.
@@ -57,13 +64,13 @@ func Compare(section string, aRaw, bRaw []model.Entry, exempt []string) SectionD
 		for i := 0; i < n; i++ {
 			switch {
 			case i >= len(bGroup):
-				hunks = append(hunks, Hunk{Identity: id, OnA: true, OnB: false})
+				hunks = append(hunks, Hunk{Identity: id, Occurrence: i, OnA: true, OnB: false})
 			case i >= len(aGroup):
-				hunks = append(hunks, Hunk{Identity: id, OnA: false, OnB: true})
+				hunks = append(hunks, Hunk{Identity: id, Occurrence: i, OnA: false, OnB: true})
 			default:
 				equal, changes := model.EntriesEqual(aGroup[i], bGroup[i])
 				if !equal {
-					hunks = append(hunks, Hunk{Identity: id, OnA: true, OnB: true, Changes: changes})
+					hunks = append(hunks, Hunk{Identity: id, Occurrence: i, OnA: true, OnB: true, Changes: changes})
 				}
 			}
 		}
