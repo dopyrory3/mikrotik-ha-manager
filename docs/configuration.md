@@ -51,11 +51,17 @@ pairs:
         - ip/address             # per-router interface addresses
         - ip/service.certificate # each router's own self-signed cert
         - user.last-logged-in    # updates independently on every login
+        - ip/dhcp-server.disabled
+        - ip/route.disabled
     runtime:
       netwatch_targets: [1.1.1.1, 8.8.8.8]
       priority_master: 200
       priority_backup: 100
       priority_degraded: 50
+      toggles:
+        vrrp: vrrp-lan
+        dhcp_servers: [dhcp-lan]
+        routes: [mtha-default]
 ```
 
 ## Top level
@@ -172,6 +178,75 @@ either router is logged into).
 `a`/`b` when the Runtime screen provisions a VRRP interface; `priority_degraded`
 and `netwatch_targets` parameterize the netwatch up/down scripts deployed
 alongside it (see [Runtime screen](usage.md#runtime)).
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `toggles` | map | Optional. What the VRRP on-master/on-backup scripts switch on a transition — see below |
+
+#### Transition toggles
+
+```yaml
+runtime:
+  toggles:
+    vrrp: vrrp-lan             # the instance whose transitions drive this
+    dhcp_servers: [dhcp-lan]   # /ip/dhcp-server entries, by name
+    routes: [mtha-default]     # /ip/route entries, by comment
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `vrrp` | string | Required once either list is set. Must name a `vrrp` entry that has `on`/`vrid`/`addresses` set, since only those get deployed scripts |
+| `dhcp_servers` | list of names | DHCP servers enabled on master, disabled on backup |
+| `routes` | list of comments | Routes enabled on master, disabled on backup — typically the default route out of an uplink only the master should use |
+
+Without `toggles`, the on-master/on-backup scripts only log the transition.
+With it, the named instance's scripts also switch the listed objects, the
+same way the netwatch scripts raise and lower VRRP priority:
+
+- **on-master** enables the listed routes, then the DHCP servers — so
+  routing is in place before the first lease is offered.
+- **on-backup** disables the DHCP servers, then the routes.
+
+Each line is a `find`-and-`set`, so a name or comment that matches nothing on
+a router is a silent no-op rather than a script error. Check the objects
+exist on both routers with exactly those names/comments.
+
+The toggles ride on **one** instance deliberately. With several VRRP
+instances, mastership can split across routers (say `vrrp-lan` master on A,
+`vrrp-wan` master on B); if every instance's scripts toggled DHCP, both
+routers could end up serving. Pick the instance whose VIP clients actually
+use as their gateway — usually the LAN one. The generated scripts keep the
+`# mtha:on-master:<name>` / `# mtha:on-backup:<name>` first line, so adding,
+changing or removing `toggles` later updates mtha's own scripts in place on
+the next deploy (and shows as `mismatched` until then). A hand-written
+script without that marker is still reported as `conflict` and left alone.
+
+**DHCP leases are not replicated.** Lease state is local to each router, and
+mtha does not sync it (see project.md §3.2). The newly-promoted master
+starts with no lease history, so after a cutover clients re-DISCOVER when
+they next renew or rebind:
+
+- With **static leases** kept in sync (`ip/dhcp-server/lease` in `sync`),
+  this is harmless — each client gets its reserved address back.
+- With a **dynamic pool**, the new master may hand a client a different
+  address than it had, and may offer an address the old master had leased
+  to someone else who hasn't renewed yet. The DHCP server's
+  `conflict-detection` setting reduces but does not remove that risk. If
+  stable addresses matter, use static leases.
+
+**The standby's DHCP server must be disabled at rest.** The scripts only run
+on a VRRP transition. If both routers start with the server enabled — for
+example because it was configured by hand before mtha was — both will offer
+leases until the standby next transitions to backup. Disable it on the
+standby yourself after the first deploy (or bounce the standby's VRRP
+interface so on-backup fires), and keep it that way.
+
+Because the toggled objects are deliberately enabled on one router and
+disabled on the other, their `disabled` field will always differ. If
+`ip/dhcp-server` or `ip/route` is in `sync.sections`, add
+`ip/dhcp-server.disabled` and `ip/route.disabled` to `exempt`, or drift
+will never be clean. That exemption applies to every entry in the section,
+so a route disabled by hand on only one router will no longer show as drift.
 
 ## Credentials
 

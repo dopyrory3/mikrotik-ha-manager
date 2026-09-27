@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"mtha/internal/config"
 	"mtha/internal/routeros"
 )
 
@@ -142,7 +143,7 @@ func vrrpOpWithGuard() Op {
 		Fields: map[string]string{
 			"name":      "vrrp-lan",
 			"priority":  "200",
-			"on-master": onMasterScript("vrrp-lan"),
+			"on-master": onMasterScript("vrrp-lan", config.TogglesConfig{}),
 		},
 		Guarded: map[string]string{
 			"on-master": onMasterMarker("vrrp-lan"),
@@ -187,7 +188,7 @@ func TestEnsureTreatsOwnScriptAsNoConflict(t *testing.T) {
 	mux.HandleFunc("/rest/interface/vrrp", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := json.Marshal(map[string]string{
 			".id": "*1", "name": "vrrp-lan", "priority": "200",
-			"on-master": onMasterScript("vrrp-lan"),
+			"on-master": onMasterScript("vrrp-lan", config.TogglesConfig{}),
 		})
 		w.Write([]byte("[" + string(body) + "]"))
 	})
@@ -308,5 +309,39 @@ func TestStatusCleanAndFirstIssue(t *testing.T) {
 	}
 	if got := dirty.FirstIssue(); got == "" || !strings.Contains(got, "netwatch 1.1.1.1") {
 		t.Errorf("FirstIssue() = %q, want it to name the missing item", got)
+	}
+}
+
+// A pre-toggles (log-only) mtha script carries the marker, so enabling
+// runtime.toggles later upgrades it in place rather than reporting conflict.
+func TestEnsureUpgradesOwnLogOnlyScriptToToggles(t *testing.T) {
+	var gotBody map[string]string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/interface/vrrp/", func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		io.WriteString(w, `{}`)
+	})
+	mux.HandleFunc("/rest/interface/vrrp", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := json.Marshal(map[string]string{
+			".id": "*1", "name": "vrrp-lan", "priority": "200",
+			"on-master": onMasterScript("vrrp-lan", config.TogglesConfig{}),
+		})
+		w.Write([]byte("[" + string(body) + "]"))
+	})
+	client := testClient(t, mux)
+
+	op := vrrpOpWithGuard()
+	want := onMasterScript("vrrp-lan", config.TogglesConfig{VRRP: "vrrp-lan", DHCPServers: []string{"dhcp-lan"}})
+	op.Fields["on-master"] = want
+
+	state, err := ensure(context.Background(), client, op)
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if state != StateOK {
+		t.Errorf("state = %v, want OK", state)
+	}
+	if gotBody["on-master"] != want {
+		t.Errorf("patch body = %v, want on-master upgraded to the toggling script", gotBody)
 	}
 }

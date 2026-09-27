@@ -102,6 +102,12 @@ or a leading `# mtha:...` comment line inside a script body) so it can be
 found again and cleanly removed, and so a hand-written on-master/on-backup
 script is never silently overwritten — that shows as `conflict` instead.
 
+The on-master/on-backup scripts log the transition and, if
+`runtime.toggles` is set, enable (master) or disable (backup) the named DHCP
+servers and routes — see
+[configuration.md](configuration.md#transition-toggles), including why the
+standby's DHCP server must be disabled at rest.
+
 The screen lists, per router, every object it manages and its state:
 
 | State | Meaning |
