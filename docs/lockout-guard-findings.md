@@ -182,6 +182,21 @@ The minimal hardening, queued for a separate decision:
 - **Docs:** `internal/plan/doc.go`, `project.md` §10.1 (the Apply bullet) and
   `docs/usage.md` (the "lock mtha out" bullet) list the guarded fields.
 
+**Done** (branch `dopyrory3/lockout-cert-guard`), with three corrections to the
+sketch above, where it disagreed with the code:
+
+- A guarded change refuses the *whole* hunk, unrelated fields included; nothing
+  in it is planned. The test's `certificate with other field` case pins that.
+  "Still planned" holds only for a hunk that touches no guarded field (the
+  existing `other field` case).
+- The `skips` golden does not change: its fixture has no certificate
+  difference, and `-update` rewrites it byte-identical.
+- `internal/plan/doc.go` names no fields ("such as moving its www-ssl
+  service"), so it needed no edit. `project.md` §10.1 and `docs/usage.md` did.
+
+A `port` case was also missing from `TestBuildRefusesRESTServiceLockout`
+(only the `skips` golden covered it), so it was added: one case per guarded field.
+
 **Doc follow-up (not done here, outside this change's target):**
 `docs/lab-rest-contract.md` contradiction 3 and its "Whether disabling
 `reverse-proxy` severs REST" item can now be closed with this result and the
