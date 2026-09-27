@@ -31,51 +31,6 @@ func TestBuildIdentitiesFirewallFallsBackToChainOrdinal(t *testing.T) {
 	}
 }
 
-func TestBuildIdentitiesDNSStaticUsesAddress(t *testing.T) {
-	entries := []Entry{
-		{"name": "host1", "address": "10.0.0.5"},
-	}
-	got := BuildIdentities("ip/dns/static", entries)
-	want := []string{"10.0.0.5"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %v, want %v", got, want)
-	}
-}
-
-func TestBuildIdentitiesDefaultUsesName(t *testing.T) {
-	entries := []Entry{
-		{"name": "backup-config"},
-	}
-	got := BuildIdentities("system/scheduler", entries)
-	want := []string{"backup-config"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %v, want %v", got, want)
-	}
-}
-
-func TestBuildIdentitiesAddressListUsesListAndAddress(t *testing.T) {
-	entries := []Entry{
-		{"list": "blocklist", "address": "10.0.0.5"},
-		{"list": "vpn-allowed", "address": "10.0.0.5"},
-	}
-	got := BuildIdentities("ip/firewall/address-list", entries)
-	want := []string{"blocklist|10.0.0.5", "vpn-allowed|10.0.0.5"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %v, want %v", got, want)
-	}
-}
-
-func TestBuildIdentitiesRoute(t *testing.T) {
-	entries := []Entry{
-		{"dst-address": "0.0.0.0/0", "gateway": "10.0.0.1"},
-	}
-	got := BuildIdentities("ip/route", entries)
-	want := []string{"0.0.0.0/0->10.0.0.1"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %v, want %v", got, want)
-	}
-}
-
 func TestBuildIdentitiesDedupesRepeatedComment(t *testing.T) {
 	entries := []Entry{
 		{"chain": "forward", "comment": "web"},
@@ -94,25 +49,13 @@ func TestBuildIdentitiesDedupesRepeatedComment(t *testing.T) {
 // deduplicated identity handed out before it (or after it).
 func TestBuildIdentitiesDedupeAvoidsLiteralSuffixCollision(t *testing.T) {
 	entries := []Entry{
-		{"name": "a", "comment": "web"},
-		{"name": "b", "comment": "web"},
-		{"name": "c", "comment": "web#2"},
-		{"name": "d", "comment": "web"},
+		{"chain": "input", "comment": "web"},
+		{"chain": "input", "comment": "web"},
+		{"chain": "input", "comment": "web#2"},
+		{"chain": "input", "comment": "web"},
 	}
-	got := BuildIdentities("system/script", entries)
+	got := BuildIdentities("ip/firewall/filter", entries)
 	want := []string{"web", "web#2", "web#2#2", "web#3"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %v, want %v", got, want)
-	}
-}
-
-func TestBuildIdentitiesDedupeAppliesToEverySection(t *testing.T) {
-	entries := []Entry{
-		{"name": "one", "comment": "shared"},
-		{"name": "two", "comment": "shared"},
-	}
-	got := BuildIdentities("system/scheduler", entries)
-	want := []string{"shared", "shared#2"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
@@ -186,57 +129,215 @@ func TestBuildIdentitiesAnchorsToDedupedComment(t *testing.T) {
 	}
 }
 
-func TestBuildIdentitiesRoutePrefersTagComment(t *testing.T) {
-	entries := []Entry{
-		{"dst-address": "10.9.0.0/16", "gateway": "10.0.0.9", "comment": "mtha:vpn"},
-	}
-	got := BuildIdentities("ip/route", entries)
-	want := []string{"mtha:vpn"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %v, want %v", got, want)
+// identityCase is one section's input and the identities BuildIdentities
+// must give it.
+type identityCase struct {
+	name    string
+	entries []Entry
+	want    []string
+}
+
+func runIdentityCases(t *testing.T, section string, cases []identityCase) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := BuildIdentities(section, tc.entries)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("%s: got %v, want %v", section, got, tc.want)
+			}
+		})
 	}
 }
 
-// Current behaviour, recorded for docs/design-questions.md (question 1): a
-// DNS record with no address (a CNAME) falls to the bare section ordinal, so
-// inserting another address-less record ahead of it re-identifies it.
-func TestBuildIdentitiesDNSStaticCNAMEIsPositional(t *testing.T) {
-	before := []Entry{
-		{"name": "svc.example", "type": "A", "address": "192.0.2.10"},
-		{"name": "www.example", "type": "CNAME", "cname": "svc.example"},
-	}
-	after := []Entry{
-		{"name": "mail.example", "type": "CNAME", "cname": "svc.example"},
-		{"name": "svc.example", "type": "A", "address": "192.0.2.10"},
-		{"name": "www.example", "type": "CNAME", "cname": "svc.example"},
-	}
-	if got, want := BuildIdentities("ip/dns/static", before), []string{"192.0.2.10", "#1"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("before: got %v, want %v", got, want)
-	}
-	if got, want := BuildIdentities("ip/dns/static", after), []string{"#1", "192.0.2.10", "#2"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("after: got %v, want %v", got, want)
+// The sections below follow docs/design-questions.md §1, Recommendation B:
+// a natural key where the section has one, with comment an ordinary field.
+
+func TestBuildIdentitiesAddressList(t *testing.T) {
+	runIdentityCases(t, "ip/firewall/address-list", []identityCase{
+		{
+			name: "list and address",
+			entries: []Entry{
+				{"list": "blocklist", "address": "10.0.0.5"},
+				{"list": "vpn-allowed", "address": "10.0.0.5"},
+			},
+			want: []string{"blocklist|10.0.0.5", "vpn-allowed|10.0.0.5"},
+		},
+		{
+			name: "comment ignored",
+			entries: []Entry{
+				{"list": "blocked", "address": "198.51.100.1", "comment": "feed"},
+			},
+			want: []string{"blocked|198.51.100.1"},
+		},
+		{
+			// The case comment-first got wrong: a shared comment made the
+			// identity positional. Each entry now keeps its own key however
+			// many share the comment or are inserted ahead of it.
+			name: "shared comment",
+			entries: []Entry{
+				{"list": "blocked", "address": "198.51.100.9", "comment": "feed"},
+				{"list": "blocked", "address": "198.51.100.1", "comment": "feed"},
+				{"list": "blocked", "address": "198.51.100.2", "comment": "feed"},
+			},
+			want: []string{"blocked|198.51.100.9", "blocked|198.51.100.1", "blocked|198.51.100.2"},
+		},
+		{
+			name: "repeated key is not deduplicated",
+			entries: []Entry{
+				{"list": "blocked", "address": "198.51.100.1"},
+				{"list": "blocked", "address": "198.51.100.1"},
+			},
+			want: []string{"blocked|198.51.100.1", "blocked|198.51.100.1"},
+		},
+	})
+}
+
+func TestBuildIdentitiesNameKeyedSections(t *testing.T) {
+	for _, section := range []string{"ip/dhcp-server", "ip/service", "user", "system/script", "system/scheduler"} {
+		t.Run(section, func(t *testing.T) {
+			runIdentityCases(t, section, []identityCase{
+				{
+					name:    "name",
+					entries: []Entry{{"name": "backup-config"}},
+					want:    []string{"backup-config"},
+				},
+				{
+					// A comment edit must be a patch, not a delete + create
+					// (for user, a delete that REST cannot undo).
+					name: "comment ignored",
+					entries: []Entry{
+						{"name": "one", "comment": "shared"},
+						{"name": "two", "comment": "shared"},
+					},
+					want: []string{"one", "two"},
+				},
+				{
+					name:    "address not used",
+					entries: []Entry{{"name": "lan", "address": "192.0.2.1"}},
+					want:    []string{"lan"},
+				},
+			})
+		})
 	}
 }
 
-// Current behaviour, recorded for docs/design-questions.md (question 1):
-// comment wins over a section's natural key, so entries sharing a comment
-// are told apart only by encounter order. Inserting one more entry with that
-// comment at the front re-identifies every later one, even though list and
-// address would have identified each of them uniquely.
-func TestBuildIdentitiesSharedCommentOverridesNaturalKey(t *testing.T) {
-	before := []Entry{
-		{"list": "blocked", "address": "198.51.100.1", "comment": "feed"},
-		{"list": "blocked", "address": "198.51.100.2", "comment": "feed"},
-	}
-	after := []Entry{
-		{"list": "blocked", "address": "198.51.100.9", "comment": "feed"},
-		{"list": "blocked", "address": "198.51.100.1", "comment": "feed"},
-		{"list": "blocked", "address": "198.51.100.2", "comment": "feed"},
-	}
-	if got, want := BuildIdentities("ip/firewall/address-list", before), []string{"feed", "feed#2"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("before: got %v, want %v", got, want)
-	}
-	if got, want := BuildIdentities("ip/firewall/address-list", after), []string{"feed", "feed#2", "feed#3"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("after: got %v, want %v", got, want)
-	}
+func TestBuildIdentitiesDHCPNetwork(t *testing.T) {
+	runIdentityCases(t, "ip/dhcp-server/network", []identityCase{
+		{
+			name: "address, comment ignored",
+			entries: []Entry{
+				{"address": "192.168.88.0/24", "gateway": "192.168.88.1", "comment": "lab: lan"},
+				{"address": "192.168.89.0/24", "comment": "lab: lan"},
+			},
+			want: []string{"192.168.88.0/24", "192.168.89.0/24"},
+		},
+	})
+}
+
+func TestBuildIdentitiesDHCPLease(t *testing.T) {
+	runIdentityCases(t, "ip/dhcp-server/lease", []identityCase{
+		{
+			name: "server and mac-address",
+			entries: []Entry{
+				{"server": "dhcp-lab", "mac-address": "02:00:00:00:AA:01", "address": "192.168.88.50", "comment": "lab: static lease"},
+				{"server": "dhcp-guest", "mac-address": "02:00:00:00:AA:01", "address": "192.168.89.50"},
+			},
+			want: []string{"dhcp-lab|02:00:00:00:AA:01", "dhcp-guest|02:00:00:00:AA:01"},
+		},
+		{
+			name: "address when mac-address is empty",
+			entries: []Entry{
+				{"server": "dhcp-lab", "mac-address": "", "address": "192.168.88.51"},
+				{"server": "dhcp-lab", "address": "192.168.88.52"},
+			},
+			want: []string{"192.168.88.51", "192.168.88.52"},
+		},
+	})
+}
+
+func TestBuildIdentitiesDNSStatic(t *testing.T) {
+	runIdentityCases(t, "ip/dns/static", []identityCase{
+		{
+			// The lab fixture: two A records under one name sharing a
+			// comment, and a CNAME.
+			name: "A and CNAME",
+			entries: []Entry{
+				{"name": "svc.lab.example", "type": "A", "address": "192.168.88.10", "comment": "lab: two addresses"},
+				{"name": "svc.lab.example", "type": "A", "address": "192.168.88.11", "comment": "lab: two addresses"},
+				{"name": "www.lab.example", "type": "CNAME", "cname": "svc.lab.example"},
+			},
+			want: []string{
+				"svc.lab.example|A|192.168.88.10",
+				"svc.lab.example|A|192.168.88.11",
+				"www.lab.example|CNAME|svc.lab.example",
+			},
+		},
+		{
+			// What comment-first plus the address fallback got wrong: a
+			// CNAME was a bare ordinal, re-identified by any address-less
+			// record inserted ahead of it.
+			name: "CNAME is not positional",
+			entries: []Entry{
+				{"name": "mail.example", "type": "CNAME", "cname": "svc.example"},
+				{"name": "svc.example", "type": "A", "address": "192.0.2.10"},
+				{"name": "www.example", "type": "CNAME", "cname": "svc.example"},
+			},
+			want: []string{"mail.example|CNAME|svc.example", "svc.example|A|192.0.2.10", "www.example|CNAME|svc.example"},
+		},
+		{
+			name:    "missing type is A",
+			entries: []Entry{{"name": "host1", "address": "10.0.0.5"}},
+			want:    []string{"host1|A|10.0.0.5"},
+		},
+		{
+			name: "unsurveyed type has no value",
+			entries: []Entry{
+				{"name": "example", "type": "TXT", "text": "one"},
+				{"name": "example", "type": "TXT", "text": "two"},
+			},
+			want: []string{"example|TXT", "example|TXT"},
+		},
+	})
+}
+
+func TestBuildIdentitiesRoute(t *testing.T) {
+	runIdentityCases(t, "ip/route", []identityCase{
+		{
+			name:    "tag comment",
+			entries: []Entry{{"dst-address": "10.9.0.0/16", "gateway": "10.0.0.9", "comment": "mtha:vpn"}},
+			want:    []string{"mtha:vpn"},
+		},
+		{
+			name:    "dst-address and gateway",
+			entries: []Entry{{"dst-address": "0.0.0.0/0", "gateway": "10.0.0.1"}},
+			want:    []string{"0.0.0.0/0->10.0.0.1"},
+		},
+	})
+}
+
+// A section with no entry in the table keeps the old fallback, except that
+// comment moves from first to last before the ordinal.
+func TestBuildIdentitiesFallback(t *testing.T) {
+	runIdentityCases(t, "tool/netwatch", []identityCase{
+		{
+			name:    "name before comment",
+			entries: []Entry{{"name": "backup-config", "comment": "nightly"}},
+			want:    []string{"backup-config"},
+		},
+		{
+			name:    "address before comment",
+			entries: []Entry{{"address": "192.0.2.1", "comment": "gw"}},
+			want:    []string{"192.0.2.1"},
+		},
+		{
+			name: "comment before ordinal, deduplicated",
+			entries: []Entry{
+				{"host": "192.168.88.1", "comment": "lab: vip"},
+				{"host": "192.168.88.2"},
+				{"host": "192.168.88.3", "comment": "lab: vip"},
+				{"host": "192.168.88.4"},
+			},
+			want: []string{"lab: vip", "#1", "lab: vip#2", "#2"},
+		},
+	})
 }
