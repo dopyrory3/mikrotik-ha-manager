@@ -13,7 +13,7 @@ func helpTestModel() Model {
 	return New(&config.Pair{Name: "core"}, false, nil)
 }
 
-func press(t *testing.T, m Model, key string) (Model, tea.Cmd) {
+func pressKey(t *testing.T, m Model, key string) (Model, tea.Cmd) {
 	t.Helper()
 	var msg tea.KeyMsg
 	switch key {
@@ -29,7 +29,7 @@ func press(t *testing.T, m Model, key string) (Model, tea.Cmd) {
 func TestHelpToggles(t *testing.T) {
 	m := helpTestModel()
 
-	m, _ = press(t, m, "?")
+	m, _ = pressKey(t, m, "?")
 	if !m.showHelp {
 		t.Fatal("? did not open the help overlay")
 	}
@@ -37,13 +37,13 @@ func TestHelpToggles(t *testing.T) {
 		t.Errorf("help view missing the global keybindings:\n%s", view)
 	}
 
-	m, _ = press(t, m, "?")
+	m, _ = pressKey(t, m, "?")
 	if m.showHelp {
 		t.Error("? did not close the help overlay")
 	}
 
-	m, _ = press(t, m, "?")
-	m, _ = press(t, m, "esc")
+	m, _ = pressKey(t, m, "?")
+	m, _ = pressKey(t, m, "esc")
 	if m.showHelp {
 		t.Error("esc did not close the help overlay")
 	}
@@ -52,7 +52,7 @@ func TestHelpToggles(t *testing.T) {
 func TestHelpShowsCurrentScreenKeys(t *testing.T) {
 	m := helpTestModel()
 	m.screen = screenRuntime
-	m, _ = press(t, m, "?")
+	m, _ = pressKey(t, m, "?")
 
 	view := m.View()
 	if !strings.Contains(view, "Show a deploy confirmation") {
@@ -74,12 +74,12 @@ func TestHelpSwallowsScreenKeys(t *testing.T) {
 	m.screen = screenRuntime
 	m.runtimePending = &pendingRuntimeAction{kind: runtimeActionRemove}
 
-	m, _ = press(t, m, "?")
-	m, cmd := press(t, m, "y")
+	m, _ = pressKey(t, m, "?")
+	m, cmd := pressKey(t, m, "y")
 	if cmd != nil || m.runtimePending == nil || m.runtimeFetching {
 		t.Error("y while help was open acted on the pending runtime confirmation")
 	}
-	m, _ = press(t, m, "1")
+	m, _ = pressKey(t, m, "1")
 	if m.screen != screenRuntime {
 		t.Errorf("screen = %v, want number keys ignored while help is open", m.screen)
 	}
@@ -90,8 +90,8 @@ func TestHelpSwallowsScreenKeys(t *testing.T) {
 
 func TestHelpQuitStillQuits(t *testing.T) {
 	m := helpTestModel()
-	m, _ = press(t, m, "?")
-	m, cmd := press(t, m, "q")
+	m, _ = pressKey(t, m, "?")
+	m, cmd := pressKey(t, m, "q")
 	if !m.quitting || cmd == nil {
 		t.Error("q while help was open did not quit")
 	}

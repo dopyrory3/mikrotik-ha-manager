@@ -17,7 +17,9 @@ var globalBindings = []keyBinding{
 	{"1", "Overview"},
 	{"2", "Drift"},
 	{"3", "Runtime"},
-	{"tab", "Cycle Overview → Drift → Runtime"},
+	{"4", "Apply"},
+	{"6", "Events"},
+	{"tab", "Cycle Overview → Drift → Runtime → Apply → Events"},
 	{"?", "Toggle this help"},
 	{"q, ctrl+c", "Quit"},
 }
@@ -31,6 +33,9 @@ var screenBindings = map[screenID][]keyBinding{
 		{"esc", "Back to the section list"},
 		{"up, k", "Move up"},
 		{"down, j", "Move down"},
+		{"space", "Cycle hunk selection A→B / B→A / off"},
+		{"a, b", "Select every hunk A→B / B→A"},
+		{"c", "Clear the section selection"},
 	},
 	screenRuntime: {
 		{"r", "Re-verify runtime status"},
@@ -39,12 +44,26 @@ var screenBindings = map[screenID][]keyBinding{
 		{"y", "Confirm pending deploy/remove (needs -write)"},
 		{"n, esc", "Cancel the pending confirmation"},
 	},
+	screenApply: {
+		{"r", "Re-read both routers and rebuild the plan"},
+		{"y", "Apply the plan (needs -write)"},
+		{"Y", "Second confirm when writing to the current master"},
+		{"n, esc", "Cancel the pending confirmation"},
+		{"up, k / down, j", "Scroll the plan"},
+	},
+	screenEvents: {
+		{"r", "Re-read both routers' logs"},
+		{"up, k / down, j", "Scroll the timeline"},
+		{"g, G", "Jump to the newest / oldest event"},
+	},
 }
 
 var screenNames = map[screenID]string{
 	screenOverview: "overview",
 	screenDrift:    "drift",
 	screenRuntime:  "runtime",
+	screenApply:    "apply",
+	screenEvents:   "events",
 }
 
 // handleHelpKey runs while the overlay is open: only closing it or quitting
