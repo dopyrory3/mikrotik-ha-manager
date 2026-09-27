@@ -3,6 +3,7 @@ package plan
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"mtha/internal/diff"
 	"mtha/internal/model"
@@ -80,6 +81,11 @@ type Options struct {
 	// applies don't overwrite each other's backups; empty means
 	// DefaultBackupName.
 	BackupName string
+	// Users is the REST user mtha logs in to each router ("a", "b") as.
+	// Build refuses to delete that user on that router, or change its group
+	// or disabled, since the rest of the apply (and the next session) could
+	// no longer connect.
+	Users map[string]string
 }
 
 // DefaultBackupName is used when Options.BackupName is empty.
@@ -182,7 +188,7 @@ func Build(inputs []SectionInput, opts Options) Plan {
 		if len(in.Choices) == 0 {
 			continue
 		}
-		ops, skips := buildSection(in, opts.Exempt)
+		ops, skips := buildSection(in, opts)
 		skipped = append(skipped, skips...)
 		for _, op := range ops {
 			byTarget[op.Router] = append(byTarget[op.Router], op)
@@ -256,7 +262,8 @@ type selected struct {
 	dir  Direction
 }
 
-func buildSection(in SectionInput, exempt []string) ([]Op, []Skip) {
+func buildSection(in SectionInput, opts Options) ([]Op, []Skip) {
+	exempt := opts.Exempt
 	sd := diff.Compare(in.Section, in.A, in.B, exempt)
 	sides := map[string]side{
 		"a": index(in.Section, in.A, exempt),
@@ -332,6 +339,10 @@ func buildSection(in SectionInput, exempt []string) ([]Op, []Skip) {
 				continue
 			}
 			tgtRow, _, _ := tgt.get(ref)
+			if in.Section == "user" && isAPIUser(tgtRow, target, opts.Users) {
+				skip(fmt.Sprintf("mtha logs in to router %s as this user; removing it would lock mtha out", target))
+				continue
+			}
 			deletes = append(deletes, Op{
 				Router: target, Method: MethodDelete, Path: "/" + in.Section + "/" + idOf(tgtRow.raw),
 				Section: in.Section, Identity: ref.Identity,
@@ -342,6 +353,10 @@ func buildSection(in SectionInput, exempt []string) ([]Op, []Skip) {
 			// On both, with field differences: make the target match.
 			srcRow, _, _ := src.get(ref)
 			tgtRow, _, _ := tgt.get(ref)
+			if reason := lockoutReason(in.Section, target, tgtRow, c.hunk.Changes, opts.Users); reason != "" {
+				skip(reason)
+				continue
+			}
 			updates = append(updates, updateOps(in.Section, target, ref, c.hunk.Changes, srcRow, tgtRow, c.dir)...)
 		}
 	}
@@ -353,6 +368,41 @@ func buildSection(in SectionInput, exempt []string) ([]Op, []Skip) {
 		ops = append(ops, c.op)
 	}
 	return ops, skips
+}
+
+// lockoutReason is why updating the target's entry with changes could cut
+// mtha off from that router mid-apply, or "" if it can't: moving, disabling
+// or narrowing the address list of the REST API service (www-ssl), or
+// changing the group or disabled flag of the user mtha logs in as.
+func lockoutReason(section, target string, tgt row, changes []model.FieldChange, users map[string]string) string {
+	var guarded map[string]bool
+	var reason string
+	switch {
+	case section == "ip/service" && stringOf(tgt.raw["name"]) == "www-ssl":
+		guarded = map[string]bool{"port": true, "disabled": true, "address": true}
+		reason = fmt.Sprintf("changes %%s of router %s's REST API service; mtha could lose its connection mid-apply", target)
+	case section == "user" && isAPIUser(tgt, target, users):
+		guarded = map[string]bool{"group": true, "disabled": true}
+		reason = fmt.Sprintf("changes %%s of the user mtha logs in to router %s as; that could lock mtha out", target)
+	default:
+		return ""
+	}
+	var fields []string
+	for _, ch := range changes {
+		if guarded[ch.Field] {
+			fields = append(fields, ch.Field)
+		}
+	}
+	if len(fields) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(reason, strings.Join(fields, ", "))
+}
+
+// isAPIUser reports whether tgt is the user mtha logs in to target as.
+func isAPIUser(tgt row, target string, users map[string]string) bool {
+	name := stringOf(tgt.raw["name"])
+	return name != "" && name == users[target]
 }
 
 // updateOps makes the target entry match the source: one PATCH setting every

@@ -157,25 +157,64 @@ func TestBuildRouteOptIn(t *testing.T) {
 }
 
 // Hunks that can't be synced safely are skipped with a reason: creating a
-// user (password unreadable), adding/removing built-in ip/service entries.
-// Changing an ip/service entry is still planned.
+// user (password unreadable), adding/removing built-in ip/service entries,
+// and anything that could lock mtha out of the target mid-apply — moving
+// its REST API service (www-ssl), or removing, regrouping or disabling the
+// user it logs in as. Other ip/service and user changes are still planned.
 func TestBuildSkipsUnsafeHunks(t *testing.T) {
-	usersA := []model.Entry{{".id": "*1", "name": "alice", "group": "full"}}
-	usersB := []model.Entry{}
+	usersA := []model.Entry{
+		{".id": "*1", "name": "alice", "group": "full"},
+		{".id": "*2", "name": "admin", "group": "full"},
+	}
+	usersB := []model.Entry{
+		{".id": "*1", "name": "api-b", "group": "full"},
+		{".id": "*2", "name": "admin", "group": "read"},
+		{".id": "*3", "name": "bob", "group": "full"},
+	}
 	svcA := []model.Entry{
 		{".id": "*1", "name": "www-ssl", "port": "443", "disabled": "false"},
 		{".id": "*2", "name": "api", "port": "8728", "disabled": "true"},
+		{".id": "*3", "name": "ssh", "port": "22"},
 	}
 	svcB := []model.Entry{
 		{".id": "*1", "name": "www-ssl", "port": "8443", "disabled": "false"},
+		{".id": "*3", "name": "ssh", "port": "2222"},
 	}
 
+	userChoices := choose(AtoB, "alice", "api-b", "bob")
+	userChoices[HunkRef{Identity: "admin"}] = BtoA // regroups router a's API user
+
 	p := Build([]SectionInput{
-		{Section: "user", A: usersA, B: usersB, Choices: choose(AtoB, "alice")},
-		{Section: "ip/service", A: svcA, B: svcB, Choices: choose(AtoB, "www-ssl", "api")},
-	}, Options{BackupName: "bk"})
+		{Section: "user", A: usersA, B: usersB, Choices: userChoices},
+		{Section: "ip/service", A: svcA, B: svcB, Choices: choose(AtoB, "www-ssl", "api", "ssh")},
+	}, Options{BackupName: "bk", Users: map[string]string{"a": "admin", "b": "api-b"}})
 
 	assertGolden(t, "skips", p.Render())
+}
+
+// Narrowing who may reach the REST API, or disabling it, is refused like a
+// port change; a change to www-ssl's other fields is still planned.
+func TestBuildRefusesRESTServiceLockout(t *testing.T) {
+	cases := []struct {
+		name     string
+		b        model.Entry
+		wantSkip bool
+	}{
+		{"address", model.Entry{".id": "*1", "name": "www-ssl", "address": "10.9.9.0/24"}, true},
+		{"disabled", model.Entry{".id": "*1", "name": "www-ssl", "disabled": "true"}, true},
+		{"other field", model.Entry{".id": "*1", "name": "www-ssl", "tls-version": "only-1.2"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := []model.Entry{{".id": "*1", "name": "www-ssl"}}
+			p := Build([]SectionInput{{
+				Section: "ip/service", A: a, B: []model.Entry{tc.b}, Choices: choose(AtoB, "www-ssl"),
+			}}, Options{})
+			if skipped := len(p.Skipped) == 1 && p.Empty(); skipped != tc.wantSkip {
+				t.Errorf("skipped = %v, want %v:\n%s", skipped, tc.wantSkip, p.Render())
+			}
+		})
+	}
 }
 
 func TestBuildNothingChosenIsEmpty(t *testing.T) {

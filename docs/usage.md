@@ -152,8 +152,13 @@ router they write to, each with a one-line explanation.
   position as on the source.
 - Selected hunks that won't be written are listed under **Skipped** with a
   reason: the hunk no longer differs, the entry is a user (REST can't read
-  passwords, so creating one would leave it passwordless), or it would add
-  or remove a built-in `ip/service` entry.
+  passwords, so creating one would leave it passwordless), it would add
+  or remove a built-in `ip/service` entry, or it could lock mtha out of the
+  target router mid-apply. That last one covers changing the `port`,
+  `disabled` or `address` of the target's `www-ssl` service (mtha's REST
+  API), and removing the user mtha logs in to the target as (the router's
+  `user` in the pair file) or changing that user's `group` or `disabled`.
+  Make such changes by hand.
 
 Press `y` to apply. Without `-write` this only tells you the session is
 read-only. If the plan writes to a router that may hold VRRP master, you must

@@ -337,6 +337,33 @@ func TestApplyStopsWhenBackupFails(t *testing.T) {
 	}
 }
 
+// The Apply screen passes each router's configured REST user to the
+// planner, so a hunk that would delete the user mtha logs in to the target
+// as is skipped rather than planned.
+func TestApplyRefusesToDeleteTargetAPIUser(t *testing.T) {
+	ra := newFakeRouter(map[string][]map[string]any{"user": {}})
+	rb := newFakeRouter(map[string][]map[string]any{"user": {
+		{".id": "*1", "name": "api-b", "group": "full"},
+	}})
+	pollers := map[poll.RouterKey]*poll.Poller{
+		"a": poll.New("a", testClient(t, ra), pollInterval),
+		"b": poll.New("b", testClient(t, rb), pollInterval),
+	}
+	pair := &config.Pair{
+		Name:    "core",
+		Routers: map[string]config.RouterConfig{"a": {User: "api-a"}, "b": {User: "api-b"}},
+		Sync:    config.SyncConfig{Sections: []string{"user"}},
+	}
+	m := New(pair, true, pollers)
+	m.setSelection("user", plan.HunkRef{Identity: "api-b"}, plan.AtoB)
+
+	m = drive(t, m, key("4"))
+
+	if !m.apply.plan.Empty() || len(m.apply.plan.Skipped) != 1 || !strings.Contains(m.apply.plan.Skipped[0].Reason, "lock mtha out") {
+		t.Fatalf("want the delete skipped as a lockout:\n%s", m.apply.plan.Render())
+	}
+}
+
 func TestApplyWithoutSelectionExplainsHowToSelect(t *testing.T) {
 	m, _, _ := applyFixture(t, true, "backup")
 	m.driftSelected = nil

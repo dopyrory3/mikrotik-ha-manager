@@ -143,14 +143,27 @@ func (m Model) startApplyPlan(recheck bool) (tea.Model, tea.Cmd) {
 	ctx := m.runtimeCtx()
 	clientA, clientB := m.pollers["a"].Client, m.pollers["b"].Client
 	sectionOrder := m.driftSections
-	exempt := m.pair.Sync.Exempt
 	choices := m.selectionSnapshot()
-	backupName := m.apply.backupName
+	opts := plan.Options{
+		Exempt:     m.pair.Sync.Exempt,
+		BackupName: m.apply.backupName,
+		Users:      m.restUsers(),
+	}
 
 	return m, func() tea.Msg {
-		p, err := buildApplyPlan(ctx, clientA, clientB, sectionOrder, choices, exempt, backupName)
+		p, err := buildApplyPlan(ctx, clientA, clientB, sectionOrder, choices, opts)
 		return applyPlanMsg{plan: p, err: err, recheck: recheck}
 	}
+}
+
+// restUsers is the REST user mtha logs in to each router as, so the planner
+// can refuse changes that would lock it out (plan.Options.Users).
+func (m Model) restUsers() map[string]string {
+	users := make(map[string]string, len(m.pair.Routers))
+	for key, r := range m.pair.Routers {
+		users[key] = r.User
+	}
+	return users
 }
 
 // selectionSnapshot copies the current selection so the planning goroutine
@@ -171,7 +184,7 @@ func (m Model) selectionSnapshot() map[string]map[plan.HunkRef]plan.Direction {
 // concurrently and plans them, in configured section order. Unlike
 // fetchDrift, any fetch failure fails the whole plan: a partial plan would
 // silently drop writes the operator selected.
-func buildApplyPlan(ctx context.Context, clientA, clientB *routeros.Client, sectionOrder []string, choices map[string]map[plan.HunkRef]plan.Direction, exempt []string, backupName string) (plan.Plan, error) {
+func buildApplyPlan(ctx context.Context, clientA, clientB *routeros.Client, sectionOrder []string, choices map[string]map[plan.HunkRef]plan.Direction, opts plan.Options) (plan.Plan, error) {
 	var sections []string
 	for _, s := range sectionOrder {
 		if len(choices[s]) > 0 {
@@ -198,7 +211,7 @@ func buildApplyPlan(ctx context.Context, clientA, clientB *routeros.Client, sect
 			return plan.Plan{}, err
 		}
 	}
-	return plan.Build(inputs, plan.Options{Exempt: exempt, BackupName: backupName}), nil
+	return plan.Build(inputs, opts), nil
 }
 
 // handleApplyMsg is Update's entry point for every Apply-screen message.

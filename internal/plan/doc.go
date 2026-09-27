@@ -20,8 +20,9 @@
 // a hunk that has since been resolved or changed is reported in
 // Plan.Skipped instead of producing a stale write. Hunks that can't be
 // synced safely (creating users, whose passwords REST can't read; adding or
-// removing entries in fixed-set sections like ip/service) are skipped with a
-// reason too.
+// removing entries in fixed-set sections like ip/service; changes that could
+// lock mtha out of the target, such as moving its www-ssl service or
+// removing the user it logs in as) are skipped with a reason too.
 //
 // Build is pure — no I/O — which keeps the planner golden-testable. Execute
 // performs a single Op; the caller (the Apply screen) runs a plan one Op at a
