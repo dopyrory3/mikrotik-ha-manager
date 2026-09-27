@@ -2,10 +2,12 @@ package poll
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -161,5 +163,132 @@ func TestEmitKeepsOnlyTheFreshestSnapshot(t *testing.T) {
 	snap := <-p.C
 	if snap.Resource == nil || snap.Resource.Version != "7.15.2" {
 		t.Errorf("kept snapshot version = %+v, want the second poll (7.15.2)", snap.Resource)
+	}
+}
+
+func TestPollRecordsEachSubEndpointFailure(t *testing.T) {
+	fail := func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusInternalServerError) }
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/system/resource", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"version":"7.15.3"}`)
+	})
+	mux.HandleFunc("/rest/system/identity", fail)
+	mux.HandleFunc("/rest/interface/vrrp", fail)
+	mux.HandleFunc("/rest/tool/netwatch", fail)
+
+	client, _ := newTLSClient(t, mux)
+	snap := New("a", client, time.Hour).pollOnce(context.Background())
+
+	if !snap.Reachable() {
+		t.Fatalf("Err = %v; sub-endpoint failures must not mark the router unreachable", snap.Err)
+	}
+	// Each failure is recorded against its own endpoint, so the readiness
+	// checks fail closed on exactly what couldn't be read (project.md §10.1).
+	if snap.IdentityErr == nil || snap.Identity != nil {
+		t.Errorf("Identity = %+v, IdentityErr = %v; want nil and an error", snap.Identity, snap.IdentityErr)
+	}
+	if snap.VRRPErr == nil || snap.VRRP != nil {
+		t.Errorf("VRRP = %+v, VRRPErr = %v; want nil and an error", snap.VRRP, snap.VRRPErr)
+	}
+	if snap.NetwatchErr == nil || snap.Netwatch != nil {
+		t.Errorf("Netwatch = %+v, NetwatchErr = %v; want nil and an error", snap.Netwatch, snap.NetwatchErr)
+	}
+}
+
+// runPoller starts p.Run and returns a channel closed when it returns.
+func runPoller(ctx context.Context, p *Poller) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.Run(ctx)
+	}()
+	return done
+}
+
+func waitDone(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after its context was cancelled")
+	}
+}
+
+func recvSnapshot(t *testing.T, p *Poller) Snapshot {
+	t.Helper()
+	select {
+	case snap := <-p.C:
+		return snap
+	case <-time.After(5 * time.Second):
+		t.Fatal("no snapshot within 5s")
+		return Snapshot{}
+	}
+}
+
+// Run polls once straight away (the dashboard shouldn't wait a whole
+// interval for its first data), then on every tick until cancelled.
+func TestRunPollsImmediatelyThenOnEachTick(t *testing.T) {
+	var resourceCalls atomic.Int64
+	mux := healthyRouterMux()
+	counted := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rest/system/resource" {
+			resourceCalls.Add(1)
+		}
+		mux.ServeHTTP(w, r)
+	})
+
+	client, _ := newTLSClient(t, counted)
+
+	// With an hour's interval, only the immediate poll can arrive.
+	ctx, cancel := context.WithCancel(context.Background())
+	slow := New("a", client, time.Hour)
+	done := runPoller(ctx, slow)
+	if snap := recvSnapshot(t, slow); !snap.Reachable() || snap.Router != "a" {
+		t.Errorf("first snapshot = %+v, want reachable router a", snap)
+	}
+	cancel()
+	waitDone(t, done)
+	if got := resourceCalls.Load(); got != 1 {
+		t.Errorf("polls with an hour's interval = %d, want exactly the immediate one", got)
+	}
+
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	fast := New("b", client, 10*time.Millisecond)
+	done = runPoller(ctx, fast)
+	for i := 0; i < 3; i++ {
+		if snap := recvSnapshot(t, fast); snap.Router != "b" {
+			t.Errorf("snapshot %d router = %q, want b", i, snap.Router)
+		}
+	}
+	cancel()
+	waitDone(t, done)
+}
+
+// A poll in flight when the TUI quits is abandoned rather than left to run
+// out the client's timeout: the context reaches the HTTP request.
+func TestRunCancelsInFlightPoll(t *testing.T) {
+	started := make(chan struct{})
+	var once sync.Once
+	client, _ := newTLSClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(started) })
+		<-r.Context().Done()
+	}))
+	p := New("a", client, time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runPoller(ctx, p)
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("poll never reached the router")
+	}
+	cancel()
+	waitDone(t, done)
+
+	snap := recvSnapshot(t, p)
+	if !errors.Is(snap.Err, context.Canceled) {
+		t.Errorf("Err = %v, want context.Canceled", snap.Err)
 	}
 }
