@@ -159,10 +159,55 @@ Note that a RouterOS guest keeps its configuration on its own system disk,
 not in the `/data` volume, so recreating a container resets it: re-run
 `testlab/provision.sh` afterwards.
 
+`testlab/pairs.yaml` is a ready-made pair file for it:
+
+```sh
+export MTHA_LAB_A_PASSWORD=London12 MTHA_LAB_B_PASSWORD=London12
+go run ./cmd/mtha -config testlab/pairs.yaml -pair lab
+```
+
+### The live-router suite
+
+`make test-lab` runs the integration tests against this lab. They write to
+both routers and deliberately break their configuration, so:
+
+- **Prerequisites:** bring the lab up and provision it first —
+  `docker compose -f testlab/docker-compose.yml up -d --build`, then
+  `./testlab/provision.sh`. The suite also needs `docker` (to check the target)
+  and `script` from util-linux (for runs of the binary in a pty).
+- **Guarded twice:** lab tests are behind the `lab` build tag *and* refuse to
+  run without `MTHA_LAB=1` (the make target sets both), so `go test ./...` and
+  `make check` never touch a router. The harness only talks to
+  `https://localhost:443` and `https://localhost:8443` as `admin`, and before
+  the first test it checks that docker publishes those ports from the
+  `mikrotik-router1`/`mikrotik-router2` containers and that a CHR guest answers
+  there. `MTHA_LAB_PASSWORD` overrides the password, like provision.sh's
+  `ROUTER_PASS`.
+- **Reset between tests:** once per test binary the harness runs provision.sh,
+  checks the documented baseline, and saves a golden `/system/backup/save` on
+  each router. Every writing test restores it from `t.Cleanup` — even when it
+  fails — which reboots both routers (about 16s, in parallel) — and deletes
+  any file created since, since a backup does not cover files. A test that
+  leaves a router unable to answer at all opts into recreating the containers
+  instead (`labtest.RecreateOnCleanup()`, about 35s); a failed restore falls
+  back to that too. If a run is killed mid-test, the next one notices (a marker
+  file on each router) and restores the golden backup before starting.
+- **Writing a lab test:** put it in a `*_lab_test.go` file starting with
+  `//go:build lab`, name it `TestLab...`, and begin with `labtest.New(t)` (or
+  `labtest.New(t, labtest.ReadOnly())` if it never writes). Drive the real
+  `ui.Model` with `labtest.Drive` and assert on device state over REST
+  (`lab.A`, `lab.B`) — see `internal/ui/sync_lab_test.go`. Runs of the actual
+  binary (`lab.RunTUI`, see `cmd/mtha/startup_lab_test.go`) are for flags,
+  startup and rendering only.
+
+`MTHA_LAB_RECREATE=1 make test-lab` also exercises the recreate path, which
+adds about a minute.
+
 ## Development
 
 ```sh
 make check     # vet + tests with the race detector — the pre-commit gate
+make test-lab  # the live-router suite (see "The live-router suite" above)
 make test      # go test ./...
 make vet       # go vet ./...
 make cover     # coverage summary
