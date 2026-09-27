@@ -1,11 +1,16 @@
 # Lock-out guard vs. `reverse-proxy`: does it protect the right service?
 
-**Status: Phase 1 (static analysis) only.** The lab experiment (Phase 2) has
-**not** been run — another worker holds the lab, and disabling the wrong
-service there would destroy its state. Nothing in `internal/**` was changed.
-This document is the deliverable; it says what is proven statically, what is
-hypothesised, the exact experiment that would settle it, and the minimal fix to
-apply if it confirms.
+**Status: Phase 2 (lab experiment) run 2026-09-28 against the populated lab,
+RouterOS 7.23.7 (long-term), router B. Verdict: the hole is not real.** The
+section-3 hypothesis is **refuted**. The static `reverse-proxy` service does not
+carry mtha's REST connection. Changing its `disabled`, `address` or `port`
+leaves REST answering to fresh clients. That holds even while the device lists
+the live REST connections under the name `reverse-proxy`. `www-ssl` is the
+listener. The guard's hardcoded name is correct on 7.23, and no fix is needed
+for `reverse-proxy`.
+
+One adjacent gap turned up: `www-ssl`'s **`certificate`** also severs REST, and
+the guard does not cover it (section 5). Nothing in `internal/**` was changed.
 
 Question: does `internal/plan`'s Apply lock-out guard protect the service that
 actually carries mtha's REST connection, and is further action required?
@@ -20,175 +25,174 @@ case section == "ip/service" && stringOf(tgt.raw["name"]) == "www-ssl":
     guarded = map[string]bool{"port": true, "disabled": true, "address": true}
 ```
 
-Supporting facts:
+Supporting facts (unchanged by Phase 2):
 
 - Adding or removing an `ip/service` entry is already impossible: the section is
-  in `patchOnlySections`, so creates/deletes are skipped before the guard runs.
+  in `patchOnlySections`, so creates and deletes are skipped before the guard
+  runs.
 - The guard is reached only from the `default` (entry on both sides) branch; the
   changes it sees are the diff's field changes on the **static** row. Dynamic
-  rows are dropped by `model.Select` before either the diff or the guard, so the
-  duplicate `reverse-proxy` name (static + one per live connection) cannot make
-  the guard match the wrong row. Match-keying on `name` is therefore sound.
+  rows are dropped by `model.Select` before either the diff or the guard, so a
+  duplicated name (static + dynamic connection rows) cannot make the guard match
+  the wrong row. Match-keying on `name` is therefore sound.
 - `ip/service` is in the shipped `sync.sections` (sample.go, testlab/pairs.yaml).
-  The sample exempts `ip/service.port` and `ip/service.certificate`, so a sync
-  **does** still consider `disabled` and `address` on every service, including
-  `reverse-proxy`.
+  Both exempt `ip/service.port` and `ip/service.certificate`, so a sync **does**
+  still consider `disabled` and `address` on every service, including
+  `reverse-proxy`. Phase 2 shows that is harmless for `reverse-proxy`.
 
-## 2. Which `/ip/service` entries can cut REST on 7.23
+## 2. Which `/ip/service` entries can cut REST on 7.23 (measured)
 
 mtha speaks HTTPS only (`internal/routeros/client.go` builds `https://…/rest`),
-to the port in the pair file (443 by default). So only services on that
-HTTPS/REST port can lock it out.
+to the port in the pair file (443 by default).
 
-- **`www-ssl` — proven.** `internal/labtest/reset_lab_test.go`
-  (`TestLabRecreateRecoversUnreachableRouter`) disables `www-ssl` on router B and
-  asserts a *fresh* REST client stops answering. That is the empirical proof
-  the guard is built on.
-- **`reverse-proxy` (static, port 443) — suspected, not yet proven.**
-  `docs/lab-rest-contract.md` §`ip/service` records that 7.23 exposes a static
-  `reverse-proxy` service on 443, the same port as `www-ssl`, and that every live
-  REST connection is listed as a **dynamic `reverse-proxy` row** (with
-  `connection:"true"`), not under `www-ssl`. Whether disabling/narrowing it cuts
-  REST cannot be answered read-only — that is the open question.
-- **The rest cannot cut mtha.** `www` is plain HTTP (:80) and mtha never uses it;
-  `api`/`api-ssl` are the legacy binary API (:8728/:8729), unused; `ssh`,
-  `telnet`, `ftp`, `winbox`, `dhcp`, `btest`, `discover` are unrelated. Changing
-  them cannot stop the HTTPS REST listener mtha talks to.
-- **Still unknown:** whether `www-ssl` and `reverse-proxy` are independent
-  listeners on 443, or whether enabling `www-ssl` gates a `reverse-proxy`
-  listener (i.e. `www-ssl` is the config and `reverse-proxy` the runtime). The
-  two-attribution evidence (dynamic rows under `reverse-proxy`, none under
-  `www-ssl`) plus `www-ssl`-disable killing REST is consistent with either. Phase
-  2 disambiguates it.
+| Service | Field changed on router B | Fresh-client REST | Guarded today |
+|---|---|---|---|
+| `www-ssl` | `disabled: true` | **severed** (0/40, 0/30) | yes |
+| `www-ssl` | `certificate: none` | **severed** (0/30) | **no** (exempt in the shipped configs only) |
+| `www-ssl` | `port`, `address` | severs by construction¹ | yes |
+| `reverse-proxy` (static, 443) | `disabled: true` | answers (40/40, 40/40) | no, not needed |
+| `reverse-proxy` | `address: 192.0.2.1/32` | answers (30/30, 30/30, 20/20) | no, not needed |
+| `reverse-proxy` | `port: 9443` | answers (30/30, 30/30, 20/20) | no, not needed |
 
-Neither the guard nor the docs encode *which name* serves REST; the guard just
-hardcodes `www-ssl`.
+¹ Not re-run here. Moving the listener off the forwarded port, or dropping
+mtha's source address, cuts REST for the same reason `disabled` does. The guard
+already refuses both.
 
-## 3. The hole (concrete, and conditional on Phase 2)
+- **`www-ssl` is the REST listener.** Disabling it severs REST while
+  `reverse-proxy` stays enabled on the same port 443. `reverse-proxy` does not
+  take over: the TLS handshake fails (`curl`: "TLS alert, decode error").
+- **`reverse-proxy` is independent of `www-ssl`, not a gate on it.** With
+  `reverse-proxy` disabled, `/ip service print detail` over SSH still shows
+  `www-ssl` enabled and REST answering. Disabling `reverse-proxy` flags its own
+  row `invalid` and touches nothing else. `/ip reverse-proxy` (its rule table)
+  is empty on the lab. With `certificate=none` it could not terminate TLS for
+  REST anyway.
+- **The name on the dynamic connection rows is a label, not the listener.** It
+  follows whichever 443 service was enabled most recently:
+  - after a boot (golden-backup restore), the connection rows are `www-ssl`;
+  - after `www-ssl` is disabled and re-enabled while `reverse-proxy` is on, they
+    are `reverse-proxy` (reproduced three times);
+  - after `reverse-proxy` is toggled, they go back to `www-ssl` (or no REST row
+    is listed at all).
 
-Assume Phase 2 confirms that a change to the static `reverse-proxy` row severs
-REST (the whole point of the experiment). Then this is a sync the guard allows
-but should refuse:
+  In the `reverse-proxy`-named state, disabling or narrowing `reverse-proxy`
+  still left REST answering, and disabling `www-ssl` still severed it (0/30).
+  The rows are also unreliable as a per-request record: several fresh `curl`
+  processes in a row were listed with the same `remote` port.
+- **This probably explains the contract survey's two readings.**
+  `testlab/bootstrap-guest.py` enables `www-ssl` at runtime on a fresh guest,
+  where `reverse-proxy` is already on. That fits "`reverse-proxy` rows" in the
+  first survey (fresh containers) and "`www-ssl` rows" in the second (after
+  restore reboots). It is consistent with the toggle result above; it was not
+  re-checked with a container recreate.
+- **The rest cannot cut mtha.** `www` is plain HTTP (:80); `api`/`api-ssl` are
+  the binary API (:8728/:8729); `ssh`, `telnet`, `ftp`, `winbox`, `dhcp`,
+  `btest` and `discover` are unrelated. Not tested, since mtha never uses them.
 
-Router A (source) and router B (target) both sync `ip/service`, and both run
-`www-ssl` enabled. They differ on the static `reverse-proxy` row — e.g. it was
-hardened on A:
+## 3. The suspected hole — refuted
+
+Phase 1 assumed that a change to the static `reverse-proxy` row might sever
+REST. It proposed this as a sync the guard allows but should refuse:
 
 ```
-A: {".id":"*5","name":"reverse-proxy","port":"443","proto":"tcp","address":"","disabled":"true", "dynamic":"false"}
-B: {".id":"*A","name":"reverse-proxy","port":"443","proto":"tcp","address":"","disabled":"false","dynamic":"false"}
+A: {".id":"*5","name":"reverse-proxy","port":"443","address":"","disabled":"true", "dynamic":"false"}
+B: {".id":"*A","name":"reverse-proxy","port":"443","address":"","disabled":"false","dynamic":"false"}
 ```
 
-Diff hunk: identity `reverse-proxy`, field `disabled` (A=true / B=false). The
-operator picks **A→B**. `Build` calls `lockoutReason("ip/service","b",tgt=A's
-row, changes=[disabled])`; the name is `reverse-proxy`, not `www-ssl`, so the
-`default` branch returns `""` and no skip is emitted. `updateOps` then emits:
+The diff hunk has identity `reverse-proxy` and field `disabled`, and the
+operator picks A→B. `lockoutReason` returns `""` because the name is not
+`www-ssl`, so `updateOps` emits:
 
 ```
 PATCH /ip/service/*A {"disabled":"true"}
 ```
 
-If `reverse-proxy` carries REST, that PATCH kills the connection that is running
-the plan: the rest of the plan fails, the post-apply drift re-read fails, and
-mtha cannot reconnect. Same story for `address` (narrowing the allowed sources
-to a subnet that excludes mtha) — the guard already blocks both of those on
-`www-ssl`. `port` is equally dangerous but rarely reaches the guard because the
-sample exempts `ip/service.port`.
+**Refuted.** That exact PATCH was sent to router B. It returned 200, and every
+fresh-connection probe for the next 20 s answered `GET /system/identity` with
+200. The same held for `address` narrowed to a subnet that excludes mtha
+(`192.0.2.1/32`) and for `port` moved to 9443. Each variant was run in both
+connection-naming states (section 2). The guard allowing these changes is
+correct: they cannot lock mtha out on 7.23.
 
-The direction that bites is "narrowed source → open target"; the reverse
-(enabling) is harmless. That is exactly the outcome the guard exists to prevent;
-today it only prevents it for the wrong name.
+## 4. Phase 2 — what was run
 
-## 4. Phase 2 — the experiment (run only when the lab is free)
+The lab was confirmed free and at baseline first: `make test-lab` passed, both
+guests had just rebooted from the golden restore, there was no dirty marker, and
+`/ip/service` was identical on A and B. Router A was never modified. All writes
+went to router B (host port 8443, SSH 2212).
 
-One router at a time; router **B** is enough (host port 8443).
+1. **Attribution.** B had static `reverse-proxy` `*A` (port 443,
+   `disabled=false`, `address=""`, `certificate=none`) and `www-ssl` `*6`
+   (port 443, `certificate=lab`). No dynamic `reverse-proxy` row was listed; the
+   REST connection rows were `www-ssl`.
+2. **Sync-shaped write.** `PATCH /ip/service/*A {"disabled":"true"}`
+   returned 200.
+3. **Probe.** A new `curl` process (new TCP + TLS, `Connection: close`) ran
+   `GET /system/identity` every 0.5 s for 20 s: 40/40 answered.
+4. **Disambiguation over SSH.** `/ip service print detail` showed
+   `reverse-proxy` `X` (disabled) and `www-ssl` still enabled. Recovery was
+   `/ip service set [find name=reverse-proxy and dynamic=no] disabled=no`, then
+   a re-probe.
+5. **Variants.** `address` and `port` on `reverse-proxy` were each applied by
+   PATCH, probed, and restored over SSH.
+6. **Control.** `PATCH /ip/service/*6 {"disabled":"true"}` (`www-ssl`) severed
+   REST (0/40). Recovery was `/ip service enable [find name=www-ssl and
+   dynamic=no]` over SSH.
+7. **Naming state.** Toggling `www-ssl` over SSH put the connection rows under
+   `reverse-proxy`. Steps 2–6 were then repeated in that state, with the same
+   results.
+8. **Certificate.** `PATCH /ip/service/*6 {"certificate":"none"}` severed REST
+   (0/30, even with verification off). Recovery was `certificate=lab` over SSH.
 
-1. **Read-only attribution.** Fresh Docker-host client:
-   `curl -sk -u admin:London12 'https://localhost:8443/rest/ip/service?name=reverse-proxy&dynamic=false'`
-   — expect exactly one static row; record `.id`, `port`, `disabled`, `address`.
-   Then `GET /rest/ip/service` and confirm the dynamic `reverse-proxy` rows carry
-   `connection:"true"` and that no dynamic `www-ssl` row exists. `www-ssl`'s own
-   row is the control.
-2. **Apply what a sync would emit.** `PATCH /ip/service/<static-id> {"disabled":"true"}`
-   on B. The response may be lost as the service goes down; ignore it.
-3. **Probe with a fresh client**, not the keep-alive one (an open connection
-   outlives the service): new client each try, `GET /system/identity`, every
-   0.5 s for up to ~20 s.
-   - answers within the window → `reverse-proxy` does **not** carry REST; the
-     `www-ssl` name is right on 7.23 and there is no hole.
-   - never answers → `reverse-proxy` **does** carry REST (or gates it); the hole
-     is real.
-4. **Disambiguate before recovering.** Over SSH (`ssh -p 2212 admin@localhost`,
-   password `London12` — port 22 is published by docker-compose) run
-   `/ip service print detail`. If `www-ssl` is still `disabled=no` while REST is
-   dead, `reverse-proxy` is the listener; if disabling `reverse-proxy` also
-   cleared `www-ssl`, the two are coupled. While SSH is up, re-enable:
-   `/ip service set [find name=reverse-proxy] disabled=no` and re-probe REST —
-   this avoids a container recreate.
-5. **Recovery if SSH is unusable.** A `docker compose restart` is **not**
-   sufficient: it restarts the existing container and preserves the guest's
-   system disk, so the config survives. A recreate is what resets a CHR guest
-   (README "Testing against real RouterOS"; `internal/labtest/lab.go`):
-   `docker compose -f testlab/docker-compose.yml up -d --force-recreate router1 router2`,
-   then `./testlab/provision.sh`. `bootstrap-guest.py` re-enables `www-ssl` on
-   the fresh guest; wait for HTTPS before proceeding.
-6. **Optional, after restoring:** repeat 2–3 for `address` (e.g.
-   `{"address":"192.0.2.1/32"}`, a subnet that excludes mtha) and for `port`
-   (e.g. `{"port":"9443"}`); and re-confirm the control that disabling
-   `www-ssl` still severs REST. Each variant that severs REST needs the same
-   recovery, so run them only if step 3 was conclusive.
+Every step recovered over SSH; no container was recreated. After each batch,
+B's static `/ip/service` rows matched A's field for field, with only the list
+order changed by the re-enables. `make test-lab` was run after the experiment:
+its golden restores return both routers to the exact baseline, and it passed.
 
-A permanent version of this belongs in the harness
-(`internal/labtest/*_lab_test.go`, `//go:build lab`, `labtest.New(t)`), guarded
-so its cleanup recreates the containers.
+A permanent version still belongs in the harness
+(`internal/labtest/*_lab_test.go`, `//go:build lab`, `labtest.New(t)`). It
+should assert that disabling `reverse-proxy` leaves REST up. Then a future
+RouterOS that moves REST onto that service fails loudly instead of quietly
+opening the hole. The test can recover through a golden restore, because REST
+stays up.
 
-## 5. Minimal fix if Phase 2 confirms
+## 5. Fix
 
-It belongs to **mtha's planner**, not to the lab harness and not to the contract
-survey: the survey only records shape; the guard is production behaviour.
+**For `reverse-proxy`: none.** Do not add it to the guard. The guard's name is
+the right one, and guarding `reverse-proxy` would refuse harmless syncs.
 
-- **File:** `internal/plan/plan.go`.
-- Replace the single-name test with membership in the set of services that can
-  terminate mtha's own connection. E.g. a package-level
+**Adjacent gap, measured: `www-ssl.certificate`.** Setting it to `none` severs
+REST, and the guard does not cover the field. Today only configuration keeps it
+out of a sync: both shipped configs exempt `ip/service.certificate`, but an
+operator can remove that exemption. `port` has the same exemption, and the guard
+covers it anyway.
 
-  ```go
-  // restServices can terminate mtha's REST connection when their port,
-  // disabled or address changes. On RouterOS 7.23 the HTTPS REST listener is
-  // exposed as a static reverse-proxy service on 443 alongside www-ssl, and
-  // live REST connections are listed under it.
-  var restServices = map[string]bool{"www-ssl": true, "reverse-proxy": true}
-  ```
+In a sync, the realistic trigger is narrower than `none`. A's `www-ssl` must
+serve REST, so A cannot hold `none`. A's certificate name also has to exist on
+B, otherwise the PATCH fails. The damaging case is a same-named certificate that
+B's REST clients reject under verified TLS (`InsecureTLS` off, the default).
 
-  and the case becomes
-  `case section == "ip/service" && restServices[stringOf(tgt.raw["name"])]:`.
-- Keep the guarded fields exactly `{port, disabled, address}` and the existing
-  "changes %s of router %s's REST API service" reason; the skip only fires when
-  one of those fields actually changed (existing logic).
-- No change is needed for add/remove (already blocked by `patchOnlySections`) or
-  for the dynamic rows (already dropped before the guard).
-- **Docs to update:** `internal/plan/doc.go`, `project.md` §10.1 (the Apply
-  bullet), `docs/usage.md` (the "lock mtha out" bullet), the `lockoutReason`
-  comment, and the anti-example `docs/lab-rest-contract.md` (contradiction 3 and
-  the "Not determinable read-only" item, which this closes).
-- **Tests:** extend `TestBuildRefusesRESTServiceLockout` with a `reverse-proxy`
-  row (`disabled`/`address` skipped, an unrelated field still planned); the
-  `skips` golden gains a line and must be regenerated. The causal fact stays
-  proven by one lab test (Phase 2 step 5), so a future RouterOS that renames the
-  service fails loudly instead of silently reopening the hole.
+The minimal hardening, queued for a separate decision:
 
-Not recommended as the minimal fix: deriving the guard from a hardcoded port.
-The pair file's `port` is the *host* port (router B is `8443` while the guest's
-`www-ssl` is still `443`), so it does not reliably equal the device service
-`port`. An explicit name set is honest about the 7.23 fact. A more durable
-future option is to discover the name from live attribution — the service under
-which mtha's own `connection:"true"` row appears — but that needs I/O, which the
-pure planner does not do.
+- **File:** `internal/plan/plan.go` (`lockoutReason`). Add `"certificate": true`
+  to the `www-ssl` guarded set, and extend its comment.
+- **Tests:** add a `certificate` case to `TestBuildRefusesRESTServiceLockout`
+  (skipped, with an unrelated field still planned), then regenerate the `skips`
+  golden.
+- **Docs:** `internal/plan/doc.go`, `project.md` §10.1 (the Apply bullet) and
+  `docs/usage.md` (the "lock mtha out" bullet) list the guarded fields.
 
-## 6. What would falsify the finding
+**Doc follow-up (not done here, outside this change's target):**
+`docs/lab-rest-contract.md` contradiction 3 and its "Whether disabling
+`reverse-proxy` severs REST" item can now be closed with this result and the
+connection-naming explanation.
 
-If Phase 2 step 3 shows REST still answering with `reverse-proxy` disabled, then
-on 7.23 `www-ssl` genuinely is the REST service, the guard's name is correct,
-and there is no hole to fix — record that in the contract survey as the resolved
-answer, and leave the guard alone. The residual risk is only that a future
-RouterOS moves/replaces the REST service name; that is a maintenance watch, not a
-present bug.
+## 6. Residual risk
+
+- A future RouterOS could move REST onto `reverse-proxy` or rename the
+  service. That is a maintenance watch, not a present bug, and the lab test in
+  section 4 is how it would be caught.
+- Outside `ip/service`, other synced sections can still lock mtha out, and the
+  guard does not cover them. Examples are `user` (the admin account's password,
+  group or `disabled`) and `ip/firewall/filter` (an input drop on 443). These
+  were not in scope and were not tested.
