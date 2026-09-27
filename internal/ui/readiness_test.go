@@ -312,6 +312,8 @@ func TestExactlyOneMaster(t *testing.T) {
 		{"both master", []routeros.VRRPInstance{{State: "master"}}, []routeros.VRRPInstance{{State: "master"}}, false},
 		{"neither master", []routeros.VRRPInstance{{State: "backup"}}, []routeros.VRRPInstance{{State: "backup"}}, false},
 		{"no instances configured", nil, nil, false},
+		{"flag-shaped", []routeros.VRRPInstance{{Master: "true", Backup: "false"}}, []routeros.VRRPInstance{{Master: "false", Backup: "true"}}, true},
+		{"standby role unknown", []routeros.VRRPInstance{{State: "master"}}, []routeros.VRRPInstance{{}}, false},
 	}
 
 	for _, tc := range cases {

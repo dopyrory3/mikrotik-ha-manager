@@ -251,6 +251,48 @@ func TestApplyUnknownVRRPStateRequiresSecondConfirmation(t *testing.T) {
 	}
 }
 
+// The master check fails closed on the VRRP payload itself: only a target
+// whose every entry positively decodes as backup gets a single-y apply.
+// Payloads are decoded as the poller would decode them, in both the flag
+// and vrrp-state shapes.
+func TestApplyMasterCheckFailsClosedOnVRRPPayload(t *testing.T) {
+	cases := []struct {
+		name        string
+		payload     string
+		wantConfirm bool
+	}{
+		{"flag master", `[{"name":"vrrp-lan","master":"true","backup":"false"}]`, true},
+		{"flag backup", `[{"name":"vrrp-lan","master":"false","backup":"true"}]`, false},
+		{"vrrp-state backup", `[{"name":"vrrp-lan","vrrp-state":"backup"}]`, false},
+		{"no role reported", `[{"name":"vrrp-lan","running":"true"}]`, true},
+		{"one entry unknown", `[{"name":"vrrp-lan","backup":"true"},{"name":"vrrp-wan","vrrp-state":"init"}]`, true},
+		{"no vrrp entries", `[]`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _, rb := applyFixture(t, true, "backup")
+			var vrrp []routeros.VRRPInstance
+			if err := json.Unmarshal([]byte(tc.payload), &vrrp); err != nil {
+				t.Fatal(err)
+			}
+			m.snapshots["b"] = poll.Snapshot{Router: "b", VRRP: vrrp}
+
+			m = drive(t, m, key("4"))
+			m = drive(t, m, key("y"))
+
+			if tc.wantConfirm {
+				if m.apply.stage != applyConfirmMaster || len(rb.writeLog()) != 0 {
+					t.Fatalf("stage = %v writes = %v, want the Y confirmation and nothing written", m.apply.stage, rb.writeLog())
+				}
+				return
+			}
+			if m.apply.stage != applyDone || len(rb.writeLog()) != 2 {
+				t.Fatalf("stage = %v writes = %v, want a single-y apply to a positive backup", m.apply.stage, rb.writeLog())
+			}
+		})
+	}
+}
+
 // If the routers change between showing the plan and confirming it, the
 // pre-run recheck shows the new plan instead of running the old one.
 func TestApplyRecheckRefusesStalePlan(t *testing.T) {

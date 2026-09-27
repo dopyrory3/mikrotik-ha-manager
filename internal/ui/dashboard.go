@@ -8,6 +8,7 @@ import (
 
 	"mtha/internal/config"
 	"mtha/internal/poll"
+	"mtha/internal/routeros"
 )
 
 // panelGap is the literal spacer rendered between the two router panels.
@@ -100,15 +101,15 @@ func routerPanel(title string, router config.RouterConfig, snap poll.Snapshot, h
 		b.WriteString(styleMuted.Render("no VRRP instances\n"))
 	}
 	for _, v := range snap.VRRP {
-		state := v.State
+		role := v.Role()
 		style := styleMuted
-		switch state {
-		case "master":
+		switch role {
+		case routeros.RoleMaster:
 			style = styleReady
-		case "backup":
+		case routeros.RoleBackup:
 			style = styleDegraded
 		}
-		fmt.Fprintf(&b, "vrrp %-12s %s\n", vrrpInstanceKey(v), style.Render(state))
+		fmt.Fprintf(&b, "vrrp %-12s %s\n", vrrpInstanceKey(v), style.Render(role.String()))
 	}
 
 	return panel.Render(strings.TrimRight(b.String(), "\n"))

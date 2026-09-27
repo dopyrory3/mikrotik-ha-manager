@@ -45,7 +45,8 @@ The landing screen. Two panels, one per router:
   when unreachable.
 - **Identity**, **version**, **uptime**, **CPU** for each router.
 - **VRRP state** per instance, coloured by state (`master` green, `backup`
-  yellow).
+  yellow). `unknown` means the router's reply didn't positively say master or
+  backup; mtha treats such a router as a possible master.
 
 Below the panels is a single **readiness verdict** with the individual checks
 that produced it. The status bar shows the pair name, the read/write mode, and
@@ -152,9 +153,11 @@ router they write to, each with a one-line explanation.
   or remove a built-in `ip/service` entry.
 
 Press `y` to apply. Without `-write` this only tells you the session is
-read-only. If the plan writes to a router that currently holds VRRP master —
-or whose VRRP state isn't known (not polled yet, unreachable) — you must then
-also press `Y` (shift+y); `n`/`esc` cancels. Just before running, mtha
+read-only. If the plan writes to a router that may hold VRRP master, you must
+then also press `Y` (shift+y); `n`/`esc` cancels. That is any router not
+positively known to be backup: one reporting master, one not polled yet or
+unreachable, one whose VRRP read failed, one with no VRRP entries, or one with
+any entry whose state is `unknown`. Just before running, mtha
 re-reads both routers and rebuilds the plan; if anything changed, nothing is
 written and the updated plan is shown for review instead.
 
@@ -288,7 +291,7 @@ failing ones with a note. Before the first poll, the verdict is `Unknown`.
 | Both routers reachable | Both polled successfully via the API |
 | RouterOS versions match | The `version` strings are identical |
 | No unresolved drift in synced sections | Drift has been fetched and every section is clean |
-| Exactly one master per VRRP instance | For each VRRP instance seen on either router, exactly one side reports `master` |
+| Exactly one master per VRRP instance | For each VRRP instance seen on either router, exactly one side reports `master`, and no entry's state is `unknown` |
 | Runtime logic present and identical on both routers | Runtime has been verified and every managed object is `ok` on both routers |
 | Standby netwatch targets up | Every netwatch entry on both routers reports status `up` |
 

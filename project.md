@@ -265,7 +265,7 @@ Milestones 1–2 deliver value on their own and de-risk the hardest part (normal
   - Selected hunks are re-diffed against fresh reads at plan time; hunks that no longer differ are skipped, not written. Creating users (REST cannot read passwords) and adding/removing built-in `ip/service` entries are skipped with a reason.
   - The plan is rebuilt immediately before execution and refused if it differs from the one confirmed.
   - Execution is sequential and stops at the first failure; drift is re-run afterwards either way.
-  - "Current VRRP master" for the second confirmation includes a router whose VRRP state is unknown (not polled, unreachable, or the read failed).
+  - "Current VRRP master" for the second confirmation includes a router whose VRRP state is unknown (not polled, unreachable, or the read failed). It fails closed: a target needs the second confirmation unless every one of its VRRP entries is positively backup, so a router with no VRRP entries, or with any entry whose role can't be decoded, counts too. The role is decoded from the `master`/`backup` flag properties and from `vrrp-state`, since neither shape has been checked against a real RouterOS 7 response yet; an entry either can't place, or where they disagree, is unknown.
 
 ### 10.2 Open
 

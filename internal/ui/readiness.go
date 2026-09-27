@@ -130,23 +130,22 @@ func versionNote(a, b poll.Snapshot, bothReachable bool) string {
 
 // exactlyOneMaster checks the §5.2 criterion per VRRP instance, matching
 // instances between routers by name (falling back to interface), not by
-// summing master counts across every instance on both routers.
+// summing master counts across every instance on both routers. An entry
+// whose role is unknown fails the check: it can't be counted either way.
 func exactlyOneMaster(a, b []routeros.VRRPInstance) bool {
 	masters := map[string]int{}
 	seen := map[string]bool{}
 
-	for _, v := range a {
-		key := vrrpInstanceKey(v)
-		seen[key] = true
-		if v.State == "master" {
-			masters[key]++
-		}
-	}
-	for _, v := range b {
-		key := vrrpInstanceKey(v)
-		seen[key] = true
-		if v.State == "master" {
-			masters[key]++
+	for _, router := range [][]routeros.VRRPInstance{a, b} {
+		for _, v := range router {
+			key := vrrpInstanceKey(v)
+			seen[key] = true
+			switch v.Role() {
+			case routeros.RoleMaster:
+				masters[key]++
+			case routeros.RoleUnknown:
+				return false
+			}
 		}
 	}
 

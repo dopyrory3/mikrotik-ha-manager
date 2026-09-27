@@ -2,6 +2,8 @@ package routeros
 
 import (
 	"context"
+	"encoding/json"
+	"strconv"
 
 	"mtha/internal/model"
 )
@@ -22,13 +24,102 @@ type Identity struct {
 }
 
 // VRRPInstance is one entry of GET /rest/interface/vrrp.
+//
+// The role is not decoded from one agreed field: no response captured from a
+// real RouterOS 7 device backs either shape. RouterOS REST reports print
+// flags as properties ("master":"true", "backup":"false"), and some
+// payloads may carry a "vrrp-state" string instead, so both are decoded and
+// Role reconciles them. Anything it can't positively place is RoleUnknown,
+// which callers must treat as "possibly master" (project.md §10.1).
 type VRRPInstance struct {
 	ID        string `json:".id"`
 	Name      string `json:"name"`
 	Interface string `json:"interface"`
 	Priority  string `json:"priority"`
-	State     string `json:"vrrp-state"`
-	Disabled  string `json:"disabled"`
+	Master    Flag   `json:"master"`
+	Backup    Flag   `json:"backup"`
+	// State is the raw "vrrp-state" value, if the router reports one. Use
+	// Role rather than reading it directly.
+	State    string `json:"vrrp-state"`
+	Disabled string `json:"disabled"`
+}
+
+// VRRPRole is an instance's VRRP role as far as it can be determined.
+type VRRPRole int
+
+const (
+	// RoleUnknown means the payload doesn't positively say master or
+	// backup: no flags or state, contradictory ones, or another state
+	// such as init.
+	RoleUnknown VRRPRole = iota
+	RoleMaster
+	RoleBackup
+)
+
+func (r VRRPRole) String() string {
+	switch r {
+	case RoleMaster:
+		return "master"
+	case RoleBackup:
+		return "backup"
+	default:
+		return "unknown"
+	}
+}
+
+// Role reconciles the master/backup flags with vrrp-state. The flags decide
+// when exactly one of them is set; vrrp-state decides when it is "master" or
+// "backup". If both sources decide and disagree, the role is unknown.
+func (v VRRPInstance) Role() VRRPRole {
+	fromFlags := RoleUnknown
+	switch master, backup := v.Master.True(), v.Backup.True(); {
+	case master && !backup:
+		fromFlags = RoleMaster
+	case backup && !master:
+		fromFlags = RoleBackup
+	}
+
+	fromState := RoleUnknown
+	switch v.State {
+	case "master":
+		fromState = RoleMaster
+	case "backup":
+		fromState = RoleBackup
+	}
+
+	switch {
+	case fromFlags == RoleUnknown:
+		return fromState
+	case fromState == RoleUnknown || fromState == fromFlags:
+		return fromFlags
+	default:
+		return RoleUnknown
+	}
+}
+
+// Flag is a RouterOS boolean property. REST encodes booleans as the strings
+// "true"/"false"; a JSON boolean is accepted too, so a payload that uses one
+// still decodes rather than failing the whole read.
+type Flag string
+
+// UnmarshalJSON accepts a JSON string or boolean.
+func (f *Flag) UnmarshalJSON(data []byte) error {
+	var b bool
+	if err := json.Unmarshal(data, &b); err == nil {
+		*f = Flag(strconv.FormatBool(b))
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	*f = Flag(s)
+	return nil
+}
+
+// True reports whether the flag is set ("true" or "yes").
+func (f Flag) True() bool {
+	return f == "true" || f == "yes"
 }
 
 // NetwatchEntry is one entry of GET /rest/tool/netwatch.

@@ -8,7 +8,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"mtha/internal/poll"
 	"mtha/internal/runtime"
 )
 
@@ -188,7 +187,7 @@ func renderRuntimeConfirm(m Model) string {
 
 	for _, router := range []string{"a", "b"} {
 		fmt.Fprintf(&b, "%s\n", styleTitle.Render("Router "+strings.ToUpper(router)))
-		master := currentMaster(m, router)
+		master := possibleMaster(m, router)
 		for _, op := range m.runtimePlans[router].Ops {
 			marker := "  "
 			if m.runtimePending.kind == runtimeActionRemove && master && op.Section == "interface/vrrp" {
@@ -200,7 +199,7 @@ func renderRuntimeConfirm(m Model) string {
 
 	b.WriteString("\n")
 	if m.runtimePending.kind == runtimeActionRemove {
-		b.WriteString(styleMuted.Render("‼ marks a VRRP interface on the router currently holding master.\n"))
+		b.WriteString(styleMuted.Render("‼ marks a VRRP interface on a router that may hold master (or whose VRRP state is unknown).\n"))
 	}
 	if !m.writeMode {
 		b.WriteString(styleDown.Render("read-only — restart with -write to actually run this"))
@@ -208,16 +207,4 @@ func renderRuntimeConfirm(m Model) string {
 		b.WriteString("press y to confirm, n/esc to cancel")
 	}
 	return b.String()
-}
-
-// currentMaster reports whether any VRRP instance this plan manages is
-// currently reporting "master" on router (used to flag a risky removal).
-func currentMaster(m Model, router string) bool {
-	snap := m.snapshots[poll.RouterKey(router)]
-	for _, v := range snap.VRRP {
-		if v.State == "master" {
-			return true
-		}
-	}
-	return false
 }

@@ -346,20 +346,35 @@ func (m Model) handleApplyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// masterTargets returns which of targets currently hold VRRP master, or
-// whose VRRP state can't be confirmed (not polled yet, unreachable, or the
-// VRRP read failed) — both require the second confirmation (project.md
-// §5.4, §7.3), since "unknown" must not be treated as "safe".
+// masterTargets returns which of targets may hold VRRP master (see
+// possibleMaster) — those require the second confirmation (project.md
+// §5.4, §7.3).
 func masterTargets(m Model, targets []string) []string {
 	var out []string
 	for _, router := range targets {
-		key := poll.RouterKey(router)
-		snap, ok := m.snapshots[key]
-		if !ok || !snap.Reachable() || snap.VRRPErr != nil || currentMaster(m, router) {
+		if possibleMaster(m, router) {
 			out = append(out, router)
 		}
 	}
 	return out
+}
+
+// possibleMaster fails closed: a router counts as a possible VRRP master
+// unless its last poll positively reports every VRRP entry as backup. Not
+// polled yet, unreachable, a failed VRRP read, no VRRP entries at all, or
+// any entry whose role is master or unknown all count, since "unknown" must
+// not be treated as "safe" (project.md §10.1).
+func possibleMaster(m Model, router string) bool {
+	snap, ok := m.snapshots[poll.RouterKey(router)]
+	if !ok || !snap.Reachable() || snap.VRRPErr != nil || len(snap.VRRP) == 0 {
+		return true
+	}
+	for _, v := range snap.VRRP {
+		if v.Role() != routeros.RoleBackup {
+			return true
+		}
+	}
+	return false
 }
 
 func renderApply(m Model) string {
