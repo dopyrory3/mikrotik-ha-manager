@@ -111,8 +111,7 @@ func renderRuntime(m Model) string {
 	}
 
 	b.WriteString("\n\n")
-	hint := "r: refresh, d: plan deploy, x: plan remove, tab: apply, 6: events, ?: help, q: quit"
-	b.WriteString(styleStatusBar.Render(fmt.Sprintf(" %s | runtime | %s ", m.pair.Name, hint)))
+	b.WriteString(styleStatusBar.Render(statusLine(m, "r: refresh, d: plan deploy, x: plan remove")))
 	return b.String()
 }
 

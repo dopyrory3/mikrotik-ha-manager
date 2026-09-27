@@ -115,8 +115,14 @@ func routerPanel(title string, router config.RouterConfig, snap poll.Snapshot, h
 	return panel.Render(strings.TrimRight(b.String(), "\n"))
 }
 
-func statusLine(m Model) string {
-	return fmt.Sprintf(" %s | %s | 2: drift, 3: runtime, 4: apply, 6: events, ?: help, q: quit ", m.pair.Name, modeLabel(m.writeMode))
+// statusLine is a screen's bottom bar: the mode, then the given segments
+// (the focused screen's own keys), then help and quit. The pair and screen
+// names are in the title and navigation keys are in the ? overlay, so the
+// bar fits an 80-column terminal (project.md §6).
+func statusLine(m Model, segments ...string) string {
+	parts := append([]string{modeLabel(m.writeMode)}, segments...)
+	parts = append(parts, "?: help, q: quit")
+	return " " + strings.Join(parts, " | ") + " "
 }
 
 // modeLabel is the read/write mode as the status bar shows it (project.md

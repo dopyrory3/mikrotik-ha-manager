@@ -93,7 +93,7 @@ func renderHelp(m Model) string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(styleStatusBar.Render(fmt.Sprintf(" %s | %s | ?/esc: close help, q: quit ", m.pair.Name, name)))
+	b.WriteString(styleStatusBar.Render(fmt.Sprintf(" %s | ?/esc: close help, q: quit ", modeLabel(m.writeMode))))
 	return b.String()
 }
 

@@ -50,8 +50,10 @@ The landing screen. Two panels, one per router:
   backup; mtha treats such a router as a possible master.
 
 Below the panels is a single **readiness verdict** with the individual checks
-that produced it. The status bar shows the pair name, the read/write mode, and
-the available keys.
+that produced it. The status bar shows the read/write mode, the current
+screen's own keys, and `?: help, q: quit`; the pair and screen names are in
+the title, and the keys for moving between screens are in the `?` overlay,
+so the bar fits an 80-column terminal.
 
 Before the first poll completes, a panel shows `waiting for first poll...`.
 The dashboard polls every 5 seconds.

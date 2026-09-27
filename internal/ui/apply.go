@@ -67,7 +67,7 @@ const (
 	applyRuntimeRemove                  // the Runtime screen's x
 )
 
-// title names the plan in the screen title and status bar.
+// title names the plan in the screen title.
 func (k applyKind) title() string {
 	switch k {
 	case applyRuntimeDeploy:
@@ -531,7 +531,7 @@ func renderApply(m Model) string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(styleStatusBar.Render(fmt.Sprintf(" %s | %s | %s | %s ", m.pair.Name, modeLabel(m.writeMode), a.kind.title(), applyHint(a.stage))))
+	b.WriteString(styleStatusBar.Render(statusLine(m, applyHint(a.stage))))
 	return b.String()
 }
 
@@ -698,11 +698,11 @@ func renderRuntimeVerify(a applyState) []string {
 func applyHint(stage applyStage) string {
 	switch stage {
 	case applyReview:
-		return "y: apply, r: re-plan, j/k: scroll, q: quit"
+		return "y: apply, r: re-plan, j/k: scroll"
 	case applyConfirmMaster:
 		return "Y: write to master, n/esc: cancel"
 	case applyIdle, applyDone:
-		return "r: re-plan, j/k: scroll, 2: drift, q: quit"
+		return "r: re-plan, j/k: scroll"
 	default:
 		return "working..."
 	}
