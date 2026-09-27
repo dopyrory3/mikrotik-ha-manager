@@ -18,16 +18,24 @@
 #
 # Both fall out of the MACs fixed below, so they are stable per service.
 #
+# Several copies ("instances") of the lab can run side by side. Everything
+# that identifies one -- project name (and so its networks), container
+# names, host ports, volumes and MACs -- comes from the MTHA_LAB_* variables
+# below, which default to instance 1: the original lab, with exactly the
+# values it has always had, so a plain `docker compose up` still brings it
+# up. Do not set the variables by hand; `testlab/lab.sh up <instance>`
+# derives them all from the instance id (see internal/labtest/instance.go).
+#
 # The project name is pinned so the lab is the same project -- and the same
 # networks -- whether it is brought up from the repo root or from this
 # directory.
-name: mtha-lab
+name: ${MTHA_LAB_PROJECT:-mtha-lab}
 
 services:
   router1:
     build: .
     image: mtha-routeros-lab:latest
-    container_name: mikrotik-router1
+    container_name: ${MTHA_LAB_ROUTER1_CONTAINER:-mikrotik-router1}
     restart: unless-stopped
     cap_add:
       - NET_ADMIN
@@ -37,24 +45,24 @@ services:
     ports:
       # host:container -- the container port is hostfwd'd by QEMU straight to
       # the RouterOS guest's own port, so this is also the guest's www-ssl port.
-      - "443:443"
-      - "2211:22"   # SSH into RouterOS itself, so you can enable www-ssl etc.
+      - "${MTHA_LAB_ROUTER1_HTTPS_PORT:-443}:443"
+      - "${MTHA_LAB_ROUTER1_SSH_PORT:-2211}:22"   # SSH into RouterOS itself, so you can enable www-ssl etc.
     networks:
       default:
-        mac_address: "02:00:00:00:01:10"
+        mac_address: "${MTHA_LAB_ROUTER1_DEFAULT_MAC:-02:00:00:00:01:10}"
       routeros_net:
         # This one is bridged to the guest, so it must be the same network on
         # both routers. Keep it in the `routeros_net` MAC slot.
-        mac_address: "02:00:00:00:01:11"
+        mac_address: "${MTHA_LAB_ROUTER1_BRIDGE_MAC:-02:00:00:00:01:11}"
     environment:
-      ROUTEROS_BRIDGE_MAC: "02:00:00:00:01:11"
+      ROUTEROS_BRIDGE_MAC: "${MTHA_LAB_ROUTER1_BRIDGE_MAC:-02:00:00:00:01:11}"
     volumes:
       - router1_data:/data   # persists disk2.raw + this router's unique MAC
 
   router2:
     build: .
     image: mtha-routeros-lab:latest
-    container_name: mikrotik-router2
+    container_name: ${MTHA_LAB_ROUTER2_CONTAINER:-mikrotik-router2}
     restart: unless-stopped
     cap_add:
       - NET_ADMIN
@@ -62,15 +70,15 @@ services:
       - /dev/net/tun
       - /dev/kvm   # omit this line on Apple Silicon / hosts without KVM
     ports:
-      - "8443:443"
-      - "2212:22"   # SSH into RouterOS itself, so you can enable www-ssl etc.
+      - "${MTHA_LAB_ROUTER2_HTTPS_PORT:-8443}:443"
+      - "${MTHA_LAB_ROUTER2_SSH_PORT:-2212}:22"   # SSH into RouterOS itself, so you can enable www-ssl etc.
     networks:
       default:
-        mac_address: "02:00:00:00:02:10"
+        mac_address: "${MTHA_LAB_ROUTER2_DEFAULT_MAC:-02:00:00:00:02:10}"
       routeros_net:
-        mac_address: "02:00:00:00:02:11"
+        mac_address: "${MTHA_LAB_ROUTER2_BRIDGE_MAC:-02:00:00:00:02:11}"
     environment:
-      ROUTEROS_BRIDGE_MAC: "02:00:00:00:02:11"
+      ROUTEROS_BRIDGE_MAC: "${MTHA_LAB_ROUTER2_BRIDGE_MAC:-02:00:00:00:02:11}"
     volumes:
       - router2_data:/data
 
@@ -81,6 +89,6 @@ networks:
 volumes:
   # Explicit names so the lab data survives being brought up from any checkout.
   router1_data:
-    name: mtha-lab-router1-data
+    name: ${MTHA_LAB_ROUTER1_VOLUME:-mtha-lab-router1-data}
   router2_data:
-    name: mtha-lab-router2-data
+    name: ${MTHA_LAB_ROUTER2_VOLUME:-mtha-lab-router2-data}

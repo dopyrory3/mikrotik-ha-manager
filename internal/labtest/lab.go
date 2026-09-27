@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"mtha/internal/config"
 	"mtha/internal/poll"
 	"mtha/internal/routeros"
@@ -24,7 +26,9 @@ import (
 
 // The lab's fixed coordinates. They are constants, not configuration, so
 // that nothing short of editing this file can point the suite at another
-// router; the pair file is checked against them rather than trusted.
+// router; the pair file is checked against them rather than trusted. The
+// per-instance ones (container names, ports) are derived from the instance
+// id in instance.go, just as fixed.
 const (
 	Host     = "localhost"
 	User     = "admin"
@@ -76,6 +80,8 @@ var fixtureCounts = map[string]int{
 // router is one lab router: where it is and what baseline looks like on it.
 type router struct {
 	key       string // pair file key, "a" or "b"
+	project   string // its instance's compose project
+	service   string // docker-compose service name
 	container string // docker-compose container_name
 	port      int    // host port published for its www-ssl
 	ether2    string // provision.sh's address on ether2
@@ -83,9 +89,23 @@ type router struct {
 	role      routeros.VRRPRole
 }
 
-var routers = []router{
-	{key: "a", container: "mikrotik-router1", port: 443, ether2: "192.168.88.2/24", priority: "200", role: routeros.RoleMaster},
-	{key: "b", container: "mikrotik-router2", port: 8443, ether2: "192.168.88.3/24", priority: "100", role: routeros.RoleBackup},
+// instance is the lab instance this test binary runs against, fixed for its
+// life: MTHA_LAB_INSTANCE (default 1), read once. An invalid value is held
+// in instanceErr and fails New.
+var instance, instanceErr = InstanceFromEnv()
+
+var routers = routersOf(instance)
+
+func routersOf(in Instance) []router {
+	rs := []router{
+		{key: "a", ether2: "192.168.88.2/24", priority: "200", role: routeros.RoleMaster},
+		{key: "b", ether2: "192.168.88.3/24", priority: "100", role: routeros.RoleBackup},
+	}
+	for i := range rs {
+		ir := in.Routers[i]
+		rs[i].project, rs[i].service, rs[i].container, rs[i].port = in.Project, ir.Service, ir.Container, ir.HTTPSPort
+	}
+	return rs
 }
 
 // Timeouts for the slow parts of a reset. A restore reboots the CHR guest,
@@ -105,9 +125,12 @@ const (
 type Lab struct {
 	t testing.TB
 
-	// Pair is the "lab" pair from testlab/pairs.yaml.
+	// Pair is the "lab" pair from testlab/pairs.yaml, on this instance's
+	// ports.
 	Pair *config.Pair
-	// PairFile is that file's path, for runs of the mtha binary.
+	// PairFile is that pair's file, for runs of the mtha binary:
+	// testlab/pairs.yaml itself for instance 1, otherwise a copy of it
+	// with the instance's ports.
 	PairFile string
 	// A and B are REST clients for the two routers, for arranging a test
 	// and asserting on device state.
@@ -168,6 +191,9 @@ func New(t testing.TB, opts ...Option) *Lab {
 
 	if err := checkOptIn(); err != nil {
 		t.Fatal(err)
+	}
+	if instanceErr != nil {
+		t.Fatal(instanceErr)
 	}
 	suite.once.Do(func() { suite.setupErr = setup() })
 	if suite.setupErr != nil {
@@ -284,7 +310,7 @@ func (l *Lab) reset(recreateFirst bool) {
 		suite.mu.Lock()
 		suite.broken = err
 		suite.mu.Unlock()
-		l.t.Errorf("LAB NOT AT BASELINE: %v\nrecover by hand: docker compose -f testlab/docker-compose.yml up -d --force-recreate && ./testlab/provision.sh", err)
+		l.t.Errorf("LAB NOT AT BASELINE: %v\nrecover by hand: %s", err, recoverHint())
 		return
 	}
 	l.t.Logf("lab reset to baseline in %s", time.Since(start).Round(100*time.Millisecond))
@@ -318,7 +344,10 @@ func setup() error {
 		return err
 	}
 	suite.root = root
-	suite.pairFile = filepath.Join(root, "testlab", "pairs.yaml")
+	suite.pairFile, err = pairFileFor(root, instance)
+	if err != nil {
+		return err
+	}
 	suite.password = os.Getenv(PasswordEnv)
 	if suite.password == "" {
 		suite.password = defaultPassword
@@ -355,7 +384,7 @@ func setup() error {
 		return err
 	}
 	if err := waitBaseline(suite.password); err != nil {
-		return fmt.Errorf("lab is not at the documented baseline after provision.sh (recreate it: docker compose -f testlab/docker-compose.yml up -d --force-recreate && ./testlab/provision.sh): %w", err)
+		return fmt.Errorf("lab is not at the documented baseline after provision.sh (recreate it: %s): %w", recoverHint(), err)
 	}
 	if err := eachRouter(func(r router) error { return saveGolden(client(r, suite.password, 30*time.Second)) }); err != nil {
 		return err
@@ -395,8 +424,11 @@ func checkPair(pair *config.Pair) error {
 }
 
 // verifyTarget proves each endpoint is a lab container: docker must report
-// the named container running and publishing that very port, and what
-// answers there must be a RouterOS CHR guest.
+// the instance's container running the lab image, as that router's service
+// in that instance's compose project, and publishing that very port; and
+// what answers there must be a RouterOS CHR guest. The container, project
+// and port are all derived from the instance id (instance.go), never taken
+// from the pair file or the environment.
 func verifyTarget(password string) error {
 	return eachRouter(func(r router) error {
 		if err := checkContainer(r); err != nil {
@@ -420,9 +452,14 @@ func verifyTarget(password string) error {
 func checkContainer(r router) error {
 	out, err := exec.Command("docker", "inspect", r.container).Output()
 	if err != nil {
-		return fmt.Errorf("docker inspect %s: %w (is the lab up? docker compose -f testlab/docker-compose.yml up -d --build)", r.container, err)
+		return fmt.Errorf("docker inspect %s: %w (is lab instance %d up? ./testlab/lab.sh up %d)", r.container, err, instance.ID, instance.ID)
 	}
 	var info []struct {
+		Config struct {
+			Image      string
+			Entrypoint []string
+			Labels     map[string]string
+		}
 		State struct {
 			Running bool
 		}
@@ -432,6 +469,27 @@ func checkContainer(r router) error {
 	}
 	if err := json.Unmarshal(out, &info); err != nil || len(info) != 1 {
 		return fmt.Errorf("docker inspect %s: unexpected output: %v", r.container, err)
+	}
+	if got := info[0].Config.Image; got != labImage {
+		return fmt.Errorf("container %s runs %s, not the lab image %s", r.container, got, labImage)
+	}
+	if got := info[0].Config.Entrypoint; len(got) != 1 || got[0] != labEntrypoint {
+		return fmt.Errorf("container %s runs entrypoint %v, not the lab's %s", r.container, got, labEntrypoint)
+	}
+	// compose also stamps its project and service labels on the image it
+	// builds, so a container merely started from that image inherits them.
+	// config-hash and oneoff are only ever set on a container compose
+	// itself created as a service, so they are what ties the labels to
+	// this instance's compose project.
+	labels := info[0].Config.Labels
+	if labels["com.docker.compose.config-hash"] == "" || labels["com.docker.compose.oneoff"] != "False" {
+		return fmt.Errorf("container %s was not created by docker compose as a lab service", r.container)
+	}
+	if got := labels["com.docker.compose.project"]; got != r.project {
+		return fmt.Errorf("container %s belongs to compose project %q, not the lab instance's %q", r.container, got, r.project)
+	}
+	if got := labels["com.docker.compose.service"]; got != r.service {
+		return fmt.Errorf("container %s is compose service %q, not %q", r.container, got, r.service)
 	}
 	if !info[0].State.Running {
 		return fmt.Errorf("container %s is not running", r.container)
@@ -520,8 +578,12 @@ func saveGolden(c *routeros.Client) error {
 // disk, so configuration and files are gone), provision.sh, and a new
 // golden backup.
 func recreate(root, password string) error {
-	if err := run(root, nil, "docker", "compose", "-f", filepath.Join("testlab", "docker-compose.yml"),
-		"up", "-d", "--force-recreate", "router1", "router2"); err != nil {
+	// The instance's whole compose environment is passed, overriding
+	// anything inherited, and -p as well: this must recreate this
+	// instance's containers and no other's.
+	if err := run(root, instance.ComposeEnv(), "docker", "compose", "-p", instance.Project,
+		"-f", filepath.Join("testlab", "docker-compose.yml"),
+		"up", "-d", "--force-recreate", routers[0].service, routers[1].service); err != nil {
 		return err
 	}
 	if err := verifyTarget(password); err != nil {
@@ -558,11 +620,14 @@ func run(dir string, env []string, name string, args ...string) error {
 	return nil
 }
 
-// waitBaseline waits until both routers match the documented baseline, and
-// still match it vrrpSettle later. One passing check is not enough after a
-// boot: both routers' VRRP starts as backup, so router b passes at once, and
-// its master-down timer can then fire before router a's first advert
-// arrives, making it master for a moment until a preempts.
+// waitBaseline waits until both routers match the documented baseline in the
+// same round, and still match it vrrpSettle later.
+//
+// Both halves matter. Checking each router separately is not enough: after a
+// reboot both sit in backup until their master-down timers fire, and when b's
+// fires first it is briefly master before a preempts it, so b would pass on
+// its own while the pair has not settled. And one passing round is not enough
+// either, because that same window can open again just after a check.
 func waitBaseline(password string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), baselineTimeout)
 	defer cancel()
@@ -800,9 +865,14 @@ func parseUptime(s string) (time.Duration, error) {
 
 var lockFile *os.File
 
-// lockLab takes an exclusive lock that lives as long as this process.
+// lockLab takes an exclusive lock on this instance that lives as long as
+// this process. Other instances have their own locks.
 func lockLab() error {
-	path := filepath.Join(os.TempDir(), "mtha-lab.lock")
+	name := "mtha-lab.lock"
+	if instance.ID != 1 {
+		name = fmt.Sprintf("mtha-lab-%d.lock", instance.ID)
+	}
+	path := filepath.Join(os.TempDir(), name)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return fmt.Errorf("open lab lock: %w", err)
@@ -815,6 +885,82 @@ func lockLab() error {
 	// process exits.
 	lockFile = f
 	return nil
+}
+
+// recoverHint is how to rebuild this instance by hand: down and up again
+// gives both routers fresh system disks, and up provisions them.
+func recoverHint() string {
+	return fmt.Sprintf("./testlab/lab.sh down %d && ./testlab/lab.sh up %d", instance.ID, instance.ID)
+}
+
+// pairFileFor is the pair file for in: testlab/pairs.yaml for instance 1,
+// otherwise a copy of it written to a temporary directory with the lab
+// pair's router ports replaced by the instance's. Only the port values
+// change; loadPair still checks the result against the instance's
+// endpoints.
+func pairFileFor(root string, in Instance) (string, error) {
+	template := filepath.Join(root, "testlab", "pairs.yaml")
+	if in.ID == 1 {
+		return template, nil
+	}
+	src, err := os.ReadFile(template)
+	if err != nil {
+		return "", err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(src, &doc); err != nil {
+		return "", fmt.Errorf("%s: %w", template, err)
+	}
+	ports := map[string]int{}
+	for _, r := range routersOf(in) {
+		ports[r.key] = r.port
+	}
+	set := 0
+	for _, pair := range seq(mapValue(doc.Content[0], "pairs")) {
+		if name := mapValue(pair, "name"); name == nil || name.Value != PairName {
+			continue
+		}
+		for key, port := range ports {
+			if p := mapValue(mapValue(mapValue(pair, "routers"), key), "port"); p != nil {
+				p.Value = strconv.Itoa(port)
+				set++
+			}
+		}
+	}
+	if set != len(ports) {
+		return "", fmt.Errorf("%s: could not find the %q pair's router ports to rewrite for instance %d", template, PairName, in.ID)
+	}
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		return "", err
+	}
+	dir, err := os.MkdirTemp("", fmt.Sprintf("mtha-lab-%d-", in.ID))
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "pairs.yaml")
+	return path, os.WriteFile(path, out, 0o600)
+}
+
+// mapValue is the value under key in YAML mapping n, or nil.
+func mapValue(n *yaml.Node, key string) *yaml.Node {
+	if n == nil || n.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Value == key {
+			return n.Content[i+1]
+		}
+	}
+	return nil
+}
+
+// seq is the items of YAML sequence n, or none.
+func seq(n *yaml.Node) []*yaml.Node {
+	if n == nil || n.Kind != yaml.SequenceNode {
+		return nil
+	}
+	return n.Content
 }
 
 // repoRoot finds the module root (go test runs in the package directory).

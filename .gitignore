@@ -4,3 +4,4 @@
 *.rsc
 .DS_Store
 .commandcode/
+/testlab/.instances/
