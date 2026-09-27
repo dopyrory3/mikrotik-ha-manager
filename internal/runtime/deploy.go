@@ -17,9 +17,14 @@ const (
 	StateMismatched
 	StateOK
 	// StateConflict means a guarded field (on-master/on-backup) already
-	// holds a non-empty, non-mtha value; deploy leaves it untouched.
+	// holds a non-empty, non-mtha value, or an untagged entry already has
+	// the Op's unique name; deploy and remove leave it untouched.
 	StateConflict
 )
+
+// foreignNote explains a StateConflict caused by an untagged same-named
+// entry.
+const foreignNote = "exists, not managed by mtha"
 
 func (s State) String() string {
 	switch s {
@@ -38,7 +43,7 @@ func (s State) String() string {
 type ItemStatus struct {
 	Label string
 	State State
-	Note  string // set when State came from an error rather than a real read
+	Note  string // why, when State came from an error or an unmanaged entry
 }
 
 // Status is the verified state of every Op in a Plan, keyed by router.
@@ -166,7 +171,10 @@ func check(ctx context.Context, client *routeros.Client, op Op) (state State, no
 	if err != nil {
 		return StateMissing, err.Error(), err
 	}
-	current, found := find(entries, op.MatchField, op.MatchValue)
+	current, found, foreign := locate(entries, op)
+	if foreign {
+		return StateConflict, foreignNote, nil
+	}
 	if !found {
 		return StateMissing, "", nil
 	}
@@ -182,7 +190,10 @@ func ensure(ctx context.Context, client *routeros.Client, op Op) (State, error) 
 		return StateMissing, err
 	}
 
-	current, found := find(entries, op.MatchField, op.MatchValue)
+	current, found, foreign := locate(entries, op)
+	if foreign {
+		return StateConflict, nil
+	}
 	if !found {
 		if err := client.Post(ctx, "/"+op.Section, op.Fields, nil); err != nil {
 			return StateMissing, err
@@ -225,7 +236,10 @@ func remove(ctx context.Context, client *routeros.Client, op Op) (State, error) 
 	if err != nil {
 		return StateMissing, err
 	}
-	current, found := find(entries, op.MatchField, op.MatchValue)
+	current, found, foreign := locate(entries, op)
+	if foreign {
+		return StateConflict, nil
+	}
 	if !found {
 		return StateMissing, nil
 	}
@@ -298,6 +312,20 @@ func stringField(e model.Entry, key string) string {
 		return s
 	}
 	return fmt.Sprintf("%v", v)
+}
+
+// locate finds op's entry by its tag. When there is none, foreign reports
+// whether an untagged entry already holds op's Unique value: that entry is
+// someone else's, so callers must neither create over it nor patch or
+// delete it.
+func locate(entries []model.Entry, op Op) (current model.Entry, found, foreign bool) {
+	if current, found = find(entries, op.MatchField, op.MatchValue); found {
+		return current, true, false
+	}
+	if op.Unique != "" {
+		_, foreign = find(entries, op.Unique, op.Fields[op.Unique])
+	}
+	return nil, false, foreign
 }
 
 func find(entries []model.Entry, field, value string) (model.Entry, bool) {

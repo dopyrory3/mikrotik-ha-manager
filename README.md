@@ -85,7 +85,8 @@ See [docs/usage.md](docs/usage.md) for screens and keybindings, and
 - Every object Runtime deploys is tagged (`mtha:` comments, or a leading
   `# mtha:` line in a script body) so it can be verified and removed cleanly,
   and so it never silently overwrites a hand-written on-master/on-backup
-  script — that surfaces as `conflict` instead. Removing a VRRP interface
+  script or adopts a same-named hand-made object — those surface as
+  `conflict` instead. Removing a VRRP interface
   currently holding master is flagged before you confirm.
 - Apply shows every REST operation before anything is written, starts each
   router's writes with `/system/backup/save`, and re-checks the plan against

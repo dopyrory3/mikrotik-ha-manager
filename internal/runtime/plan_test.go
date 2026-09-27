@@ -122,7 +122,7 @@ func togglePair() *config.Pair {
 func vrrpOpNamed(t *testing.T, ops []Op, name string) Op {
 	t.Helper()
 	for _, op := range ops {
-		if op.Section == "interface/vrrp" && op.MatchValue == name {
+		if op.Section == "interface/vrrp" && op.Fields["name"] == name {
 			return op
 		}
 	}

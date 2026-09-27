@@ -13,14 +13,20 @@ var routers = []string{"a", "b"}
 
 // Op is one idempotent "ensure this object exists with these fields" unit:
 // find the entry in Section (a bare REST path, e.g. "interface/vrrp") where
-// MatchField equals MatchValue, create it if missing, patch any mismatched
-// fields if present, leave it alone otherwise.
+// MatchField equals MatchValue — always its mtha: tag — create it if
+// missing, patch any mismatched fields if present, leave it alone otherwise.
 type Op struct {
 	Section    string
 	MatchField string
 	MatchValue string
 	Fields     map[string]string
 	Label      string
+
+	// Unique, when set, names a field RouterOS keeps unique in Section
+	// (e.g. an interface name). An entry without the tag that already holds
+	// Fields[Unique] was not made by mtha: it is reported StateConflict and
+	// is never patched, adopted or deleted.
+	Unique string
 
 	// Guarded lists entries of Fields whose current on-router value, if
 	// non-empty and not this Op's own already-deployed value, must start
@@ -169,8 +175,9 @@ func vrrpOp(inst config.VRRPInstance, router string, rt config.RuntimeConfig) Op
 	}
 	return Op{
 		Section:    "interface/vrrp",
-		MatchField: "name",
-		MatchValue: inst.Interface,
+		MatchField: "comment",
+		MatchValue: vrrpTag(inst.Interface),
+		Unique:     "name",
 		Label:      "vrrp interface " + inst.Interface,
 		Fields: map[string]string{
 			"name":            inst.Interface,
@@ -235,8 +242,9 @@ func netwatchOp(target, router string, rt config.RuntimeConfig) Op {
 func schedulerOp() Op {
 	return Op{
 		Section:    "system/scheduler",
-		MatchField: "name",
-		MatchValue: "mtha-snapshot",
+		MatchField: "comment",
+		MatchValue: "mtha:scheduler:snapshot",
+		Unique:     "name",
 		Label:      "scheduler mtha-snapshot",
 		Fields: map[string]string{
 			"name":     "mtha-snapshot",

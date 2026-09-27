@@ -109,6 +109,9 @@ on-master/on-backup scripts and periodic snapshot scheduler job project.md
 or a leading `# mtha:...` comment line inside a script body) so it can be
 found again and cleanly removed, and so a hand-written on-master/on-backup
 script is never silently overwritten — that shows as `conflict` instead.
+Objects are matched by that tag, not by name: a VRRP interface (or scheduler
+job) you created by hand with the same name is reported as `conflict` and is
+never adopted, changed or removed.
 
 The on-master/on-backup scripts log the transition and, if
 `runtime.toggles` is set, enable (master) or disable (backup) the named DHCP
@@ -123,7 +126,7 @@ The screen lists, per router, every object it manages and its state:
 | `missing` | Not present on that router yet |
 | `mismatched` | Present, but one or more fields differ from the desired config |
 | `ok` | Present and matching |
-| `conflict` | A guarded field (on-master/on-backup) already holds a non-mtha value; deploy won't overwrite it |
+| `conflict` | A guarded field (on-master/on-backup) already holds a non-mtha value, or an object with the same name exists without mtha's tag (`exists, not managed by mtha`); deploy won't overwrite it and remove won't delete it |
 
 `d` (deploy) and `x` (remove) both show a confirmation listing exactly what
 will run before anything happens — visible even without `-write`, so you can

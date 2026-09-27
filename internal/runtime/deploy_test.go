@@ -419,3 +419,58 @@ func TestEnsureUpgradesOwnLogOnlyScriptToToggles(t *testing.T) {
 		t.Errorf("patch body = %v, want on-master upgraded to the toggling script", gotBody)
 	}
 }
+
+// A hand-made VRRP interface with the name mtha would use, but without its
+// tag, is not mtha's: verify reports it as a conflict, deploy neither
+// adopts nor patches it, and remove never deletes it.
+func TestUntaggedSameNamedInterfaceIsNeverTouched(t *testing.T) {
+	var writes []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/interface/vrrp", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writes = append(writes, r.Method+" "+r.URL.Path)
+		}
+		io.WriteString(w, `[{".id":"*5","name":"vrrp-lan","comment":"hand-made, production","priority":"150"}]`)
+	})
+	mux.HandleFunc("/rest/interface/vrrp/", func(w http.ResponseWriter, r *http.Request) {
+		writes = append(writes, r.Method+" "+r.URL.Path)
+	})
+	client := testClient(t, mux)
+	op := vrrpOp(fullInstance(), "a", testRuntimeConfig())
+	plans := map[string]Plan{"a": {Router: "a", Ops: []Op{op}}, "b": {Router: "b"}}
+
+	status, err := Verify(context.Background(), client, client, plans)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if it := status["a"][0]; it.State != StateConflict || it.Note != foreignNote {
+		t.Errorf("verify = %+v, want conflict %q", it, foreignNote)
+	}
+
+	if res := Deploy(context.Background(), client, client, plans); res.Err != nil || res.Status["a"][0].State != StateConflict {
+		t.Errorf("deploy = %+v, want conflict without error", res)
+	}
+	if res := Remove(context.Background(), client, client, plans); res.Err != nil || res.Status["a"][0].State != StateConflict {
+		t.Errorf("remove = %+v, want conflict without error", res)
+	}
+	if len(writes) != 0 {
+		t.Errorf("writes = %v, want none to an interface mtha didn't create", writes)
+	}
+}
+
+// An interface carrying mtha's tag is found by it, whatever else it holds.
+func TestTaggedInterfaceIsMatchedByTag(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/interface/vrrp", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `[{".id":"*1","name":"vrrp-lan","comment":"mtha:vrrp:vrrp-lan","priority":"50"}]`)
+	})
+	op := vrrpOp(fullInstance(), "a", testRuntimeConfig())
+
+	state, note, err := check(context.Background(), testClient(t, mux), op)
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if state != StateMismatched || note != "" {
+		t.Errorf("state = %v note = %q, want mismatched (fields differ), not a conflict", state, note)
+	}
+}
