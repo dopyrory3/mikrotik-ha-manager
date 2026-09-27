@@ -273,12 +273,19 @@ One environment variable per router:
 MTHA_<PAIR>_<ROUTER>_PASSWORD
 ```
 
-`<PAIR>` and `<ROUTER>` are upper-cased. For pair `core`, router `a`:
+`<PAIR>` and `<ROUTER>` are upper-cased, with `-` mapped to `_`. For pair
+`core`, router `a`:
 
 ```sh
 export MTHA_CORE_A_PASSWORD=...
 export MTHA_CORE_B_PASSWORD=...
 ```
+
+A pair named `dc-edge` reads `MTHA_DC_EDGE_A_PASSWORD` and
+`MTHA_DC_EDGE_B_PASSWORD`, because a shell cannot export a name containing a
+hyphen. Only the variable name changes: the pair is still `dc-edge` in the
+pair file, on the command line, and in the UI. Other characters are not
+mapped, so keep pair names to letters, digits, `-` and `_`.
 
 The environment is the only source: there is no credential field in the pair
 file, and no keychain integration yet. If the variable is unset or empty,
