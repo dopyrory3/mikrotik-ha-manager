@@ -121,6 +121,32 @@ are plain `go build`.
 | [docs/usage.md](docs/usage.md) | Command-line flags, screens, keybindings, readiness checks |
 | [project.md](project.md) | Full product spec, architecture and milestones |
 
+## Testing against real RouterOS
+
+`docker-compose.yml` runs two RouterOS 7 CHR instances as a real VRRP pair, so
+the tool can be exercised against a device rather than the hand-written
+fixtures in `internal/routeros`:
+
+```sh
+docker compose up -d --build     # first run builds testlab/
+./testlab/provision.sh           # address ether2 and build the VRRP pair
+```
+
+Then point a pair file at `https://localhost:443` and `https://localhost:8443`
+(user `admin`, password `London12`) and run mtha. The two routers are bridged
+onto a shared network, so VRRP forms and the VIP is pingable.
+
+The stock image cannot be used as-is for this: it assigns the guest NIC's MAC
+to the bridge port, which makes the in-container bridge drop traffic to the
+guest, and it picks that port by the name `eth1`, which Docker does not keep
+stable across a restart. `testlab/` patches both, and enables `www-ssl` (with
+a throwaway self-signed certificate) since mtha speaks HTTPS only. See the
+comments in `testlab/` for the details.
+
+Note that a RouterOS guest keeps its configuration on its own system disk,
+not in the `/data` volume, so recreating a container resets it: re-run
+`testlab/provision.sh` afterwards.
+
 ## Development
 
 ```sh

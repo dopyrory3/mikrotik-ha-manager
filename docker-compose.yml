@@ -1,0 +1,80 @@
+# Two RouterOS CHR instances forming a real VRRP pair, for testing mtha
+# against actual RouterOS rather than hand-written fixtures.
+#
+#   docker compose up -d --build     # first run builds testlab/Dockerfile
+#   ./testlab/provision.sh           # address + VRRP on both routers
+#   ./mtha -config ... -pair lab     # see docs/testing.md
+#
+# The stock image cannot be used as-is for a two-router lab. testlab/ fixes
+# two things it gets wrong when a container is attached to two networks:
+#
+#   1. It bridges whichever interface is named eth1. Docker does not promise
+#      which network becomes eth1, and the order can change across a
+#      `docker restart`, so the two routers can end up bridged onto different
+#      networks and never see each other. We pick the interface by MAC.
+#   2. It assigns that interface the guest NIC's MAC. A bridge port holding
+#      the guest's own address makes the in-container bridge drop every frame
+#      addressed to the guest. We remove that assignment.
+#
+# Both fall out of the MACs fixed below, so they are stable per service.
+services:
+  router1:
+    build: ./testlab
+    image: mtha-routeros-lab:latest
+    container_name: mikrotik-router1
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+      - /dev/kvm   # omit this line on Apple Silicon / hosts without KVM
+    ports:
+      # host:container -- the container port is hostfwd'd by QEMU straight to
+      # the RouterOS guest's own port, so this is also the guest's www-ssl port.
+      - "443:443"
+      - "2211:22"   # SSH into RouterOS itself, so you can enable www-ssl etc.
+    networks:
+      default:
+        mac_address: "02:00:00:00:01:10"
+      routeros_net:
+        # This one is bridged to the guest, so it must be the same network on
+        # both routers. Keep it in the `routeros_net` MAC slot.
+        mac_address: "02:00:00:00:01:11"
+    environment:
+      ROUTEROS_BRIDGE_MAC: "02:00:00:00:01:11"
+    volumes:
+      - router1_data:/data   # persists disk2.raw + this router's unique MAC
+
+  router2:
+    build: ./testlab
+    image: mtha-routeros-lab:latest
+    container_name: mikrotik-router2
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+      - /dev/kvm   # omit this line on Apple Silicon / hosts without KVM
+    ports:
+      - "8443:443"
+      - "2212:22"   # SSH into RouterOS itself, so you can enable www-ssl etc.
+    networks:
+      default:
+        mac_address: "02:00:00:00:02:10"
+      routeros_net:
+        mac_address: "02:00:00:00:02:11"
+    environment:
+      ROUTEROS_BRIDGE_MAC: "02:00:00:00:02:11"
+    volumes:
+      - router2_data:/data
+
+networks:
+  routeros_net:
+    driver: bridge
+
+volumes:
+  # Explicit names so the lab data survives being brought up from any checkout.
+  router1_data:
+    name: mtha-lab-router1-data
+  router2_data:
+    name: mtha-lab-router2-data
