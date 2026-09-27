@@ -82,6 +82,15 @@ func (c *Client) Patch(ctx context.Context, path string, body, out any) error {
 	return c.do(ctx, http.MethodPatch, path, body, out)
 }
 
+// Command runs a RouterOS console command over REST — an HTTP POST against
+// the command's path, e.g. "/system/backup/save" or
+// "/ip/firewall/filter/unset" — decoding the response into out if non-nil.
+// Unlike Post (which, despite its name, is RouterOS's PUT "add"), this is a
+// real POST: RouterOS REST reserves POST for commands.
+func (c *Client) Command(ctx context.Context, path string, body, out any) error {
+	return c.do(ctx, http.MethodPost, path, body, out)
+}
+
 // Delete removes the resource at path.
 func (c *Client) Delete(ctx context.Context, path string) error {
 	return c.do(ctx, http.MethodDelete, path, nil, nil)

@@ -140,6 +140,13 @@ func TestWriteMethodsMapToRESTVerbs(t *testing.T) {
 			want: http.MethodPatch,
 		},
 		{
+			name: "Command runs via POST",
+			call: func(c *Client) error {
+				return c.Command(context.Background(), "/system/backup/save", map[string]string{"name": "x"}, nil)
+			},
+			want: http.MethodPost,
+		},
+		{
 			name: "Delete removes",
 			call: func(c *Client) error { return c.Delete(context.Background(), "/system/script/*1") },
 			want: http.MethodDelete,

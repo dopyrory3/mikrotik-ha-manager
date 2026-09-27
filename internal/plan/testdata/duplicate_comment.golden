@@ -1,0 +1,5 @@
+router B:
+  1. POST /system/backup/save {"name":"bk"}
+       pre-apply backup of router b
+  2. PATCH /ip/firewall/filter/*8 {"dst-port":"443"}
+       update web#2 to match router a

@@ -1,0 +1,14 @@
+router A:
+  1. POST /system/backup/save {"name":"bk"}
+       pre-apply backup of router a
+  2. PUT /system/script {"name":"rotate-logs","policy":"read,write","source":":log info rotate"}
+       create rotate-logs (from router b)
+router B:
+  3. POST /system/backup/save {"name":"bk"}
+       pre-apply backup of router b
+  4. DELETE /ip/firewall/filter/*12
+       remove legacy (not on router a)
+  5. PATCH /ip/firewall/filter/*11 {"action":"accept"}
+       update allow-http to match router a
+  6. POST /ip/firewall/filter/unset {"numbers":"*11","value-name":"src-address"}
+       unset src-address on allow-http (default on router a)
