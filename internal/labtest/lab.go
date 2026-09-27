@@ -94,7 +94,11 @@ var routers = []router{
 const (
 	rebootTimeout   = 3 * time.Minute
 	baselineTimeout = 90 * time.Second
-	commandTimeout  = 10 * time.Minute // provision.sh, docker compose
+	// vrrpSettle outlasts vrrp-lan's master-down interval (3 x its 1s
+	// advert interval, plus skew), long enough for a router wrongly
+	// holding master to be preempted.
+	vrrpSettle     = 4 * time.Second
+	commandTimeout = 10 * time.Minute // provision.sh, docker compose
 )
 
 // Lab is a test's handle on the pair, at baseline when New returns.
@@ -213,6 +217,18 @@ func (l *Lab) Client(key string) *routeros.Client {
 	}
 	l.t.Fatalf("no lab router %q", key)
 	return nil
+}
+
+// Container returns the docker container name of router "a" or "b", for
+// arranging what lives outside the guest.
+func (l *Lab) Container(key string) string {
+	for _, r := range routers {
+		if r.key == key {
+			return r.container
+		}
+	}
+	l.t.Fatalf("no lab router %q", key)
+	return ""
 }
 
 // Pollers builds real pollers for both routers, as cmd/mtha does, for
@@ -542,16 +558,31 @@ func run(dir string, env []string, name string, args ...string) error {
 	return nil
 }
 
-// waitBaseline waits until both routers match the documented baseline.
+// waitBaseline waits until both routers match the documented baseline, and
+// still match it vrrpSettle later. One passing check is not enough after a
+// boot: both routers' VRRP starts as backup, so router b passes at once, and
+// its master-down timer can then fire before router a's first advert
+// arrives, making it master for a moment until a preempts.
 func waitBaseline(password string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), baselineTimeout)
 	defer cancel()
-	return eachRouter(func(r router) error {
-		_, err := waitFor(ctx, func() (struct{}, error) {
-			return struct{}{}, checkBaseline(ctx, client(r, password, 5*time.Second), r)
+	check := func() error {
+		return eachRouter(func(r router) error {
+			return checkBaseline(ctx, client(r, password, 5*time.Second), r)
 		})
-		return err
+	}
+	_, err := waitFor(ctx, func() (struct{}, error) {
+		if err := check(); err != nil {
+			return struct{}{}, err
+		}
+		select {
+		case <-time.After(vrrpSettle):
+		case <-ctx.Done():
+			return struct{}{}, ctx.Err()
+		}
+		return struct{}{}, check()
 	})
+	return err
 }
 
 // checkBaseline compares one router with what provision.sh establishes: its
