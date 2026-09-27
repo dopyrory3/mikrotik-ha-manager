@@ -4,9 +4,14 @@
 #   export MTHA_LAB_A_PASSWORD=London12 MTHA_LAB_B_PASSWORD=London12
 #   go run ./cmd/mtha -config testlab/pairs.yaml -pair lab
 #
+# These are lab instance 1's ports. For another instance, internal/labtest
+# and `testlab/lab.sh up <instance>` each write a copy with that instance's
+# ports; nothing else changes.
+#
 # internal/labtest refuses to run unless both routers here are exactly the
-# lab's endpoints (localhost:443 and localhost:8443, user admin), so this
-# file cannot be pointed at another router to run the suite against it.
+# instance's endpoints (localhost:443 and localhost:8443 for instance 1, user
+# admin), so this file cannot be pointed at another router to run the suite
+# against it.
 pairs:
   - name: lab
     routers:

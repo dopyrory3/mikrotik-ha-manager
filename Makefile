@@ -15,6 +15,8 @@ test-race:
 # resets it between tests, so it needs the lab up and provisioned first:
 #   docker compose -f testlab/docker-compose.yml up -d --build
 #   ./testlab/provision.sh
+# or ./testlab/lab.sh up. For another lab instance (see README.md):
+#   ./testlab/lab.sh up 2 && MTHA_LAB_INSTANCE=2 make test-lab
 # -p 1 runs one package's routers at a time (the harness also locks).
 test-lab:
 	MTHA_LAB=1 go test -tags lab -race -count=1 -p 1 -timeout 30m -v -run '^TestLab' ./...
