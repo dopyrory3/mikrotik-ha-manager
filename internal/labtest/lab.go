@@ -50,6 +50,29 @@ const (
 	VIP      = "192.168.88.1/24"
 )
 
+// fixtureCounts is how many static (dynamic != "true") entries
+// provision.sh's fixture leaves in each section, the same on both routers.
+// checkBaseline holds each router to it, so a test that adds or removes an
+// entry and claims to be ReadOnly is caught, and a half-provisioned or
+// doubled fixture is refused. Keep it in step with populate_fixture.
+var fixtureCounts = map[string]int{
+	"ip/firewall/filter":       11,
+	"ip/firewall/nat":          2,
+	"ip/firewall/mangle":       1,
+	"ip/firewall/raw":          1,
+	"ip/firewall/address-list": 3,
+	"ip/dns/static":            3,
+	"ip/route":                 2,
+	"ip/pool":                  1,
+	"ip/dhcp-server":           1,
+	"ip/dhcp-server/network":   1,
+	"ip/dhcp-server/lease":     1,
+	"system/script":            1,
+	"system/scheduler":         1,
+	"user":                     2,
+	"tool/netwatch":            2,
+}
+
 // router is one lab router: where it is and what baseline looks like on it.
 type router struct {
 	key       string // pair file key, "a" or "b"
@@ -532,9 +555,25 @@ func waitBaseline(password string) error {
 }
 
 // checkBaseline compares one router with what provision.sh establishes: its
-// ether2 address, vrrp-lan with its priority, the VIP on vrrp-lan, and the
-// VRRP role that priority wins.
+// ether2 address, vrrp-lan with its priority, the VIP on vrrp-lan, the VRRP
+// role that priority wins, and the fixture's entry counts.
 func checkBaseline(ctx context.Context, c *routeros.Client, r router) error {
+	for section, want := range fixtureCounts {
+		var entries []map[string]string
+		if err := c.Get(ctx, "/"+section, &entries); err != nil {
+			return fmt.Errorf("router %s: %w", r.key, err)
+		}
+		got := 0
+		for _, e := range entries {
+			if e["dynamic"] != "true" {
+				got++
+			}
+		}
+		if got != want {
+			return fmt.Errorf("router %s: %s has %d static entries, the fixture has %d", r.key, section, got, want)
+		}
+	}
+
 	var addrs []map[string]string
 	if err := c.Get(ctx, "/ip/address", &addrs); err != nil {
 		return fmt.Errorf("router %s: %w", r.key, err)

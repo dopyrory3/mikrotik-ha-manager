@@ -19,12 +19,18 @@ const labFilter = "ip/firewall/filter"
 // the outcome asserted on the routers themselves.
 //
 // Router a gains a firewall rule router b lacks. The drift screen must find
-// exactly that hunk (and nothing else: the lab pair is drift-free at
-// baseline), and syncing it a→b from the Apply screen must take a
+// exactly that hunk (and nothing else: the lab pair, fixture included, is
+// drift-free at baseline), and syncing it a→b from the Apply screen must take a
 // pre-apply backup on b, add the rule there, and leave a untouched.
 func TestLabSyncFirewallRuleAToB(t *testing.T) {
 	lab := labtest.New(t)
 	ctx := context.Background()
+
+	// The baseline fixture already has filter rules on both routers.
+	var baseline []map[string]string
+	if err := lab.B.Get(ctx, "/"+labFilter, &baseline); err != nil {
+		t.Fatal(err)
+	}
 
 	rule := map[string]string{
 		"chain": "input", "action": "accept", "protocol": "udp", "dst-port": "53",
@@ -86,12 +92,13 @@ func TestLabSyncFirewallRuleAToB(t *testing.T) {
 	if err := lab.B.Get(ctx, "/"+labFilter, &onB); err != nil {
 		t.Fatal(err)
 	}
-	if len(onB) != 1 {
-		t.Fatalf("router b has %d filter rules, want 1: %v", len(onB), onB)
+	if len(onB) != len(baseline)+1 {
+		t.Fatalf("router b has %d filter rules, want its %d baseline rules plus the synced one: %v", len(onB), len(baseline), onB)
 	}
+	added := onB[len(onB)-1] // appended, as on a
 	for k, want := range rule {
-		if onB[0][k] != want {
-			t.Errorf("router b rule %s = %q, want %q", k, onB[0][k], want)
+		if added[k] != want {
+			t.Errorf("router b rule %s = %q, want %q", k, added[k], want)
 		}
 	}
 	var backups []map[string]string
