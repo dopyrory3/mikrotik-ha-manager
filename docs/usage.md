@@ -134,6 +134,7 @@ Global, on any screen:
 | `2` | Drift |
 | `3` | Runtime |
 | `tab` | Cycle Overview → Drift → Runtime → Overview |
+| `?` | Open/close the help overlay |
 | `q`, `ctrl+c` | Quit |
 
 Drift screen:
@@ -156,8 +157,18 @@ Runtime screen:
 | `y` | Confirm the pending deploy/remove (requires `-write`) |
 | `n`, `esc` | Cancel the pending confirmation |
 
-There is no in-app help overlay yet (`?` is not wired up); this document is
-the keybinding reference.
+Help overlay:
+
+| Key | Action |
+| --- | --- |
+| `?`, `esc` | Close the overlay |
+| `q`, `ctrl+c` | Quit |
+
+`?` opens a help overlay on any screen, listing the global keys plus the
+ones for the screen you opened it from. While it is open every other key is
+ignored — so, for instance, a stray `y` can't confirm a pending Runtime
+deploy/remove underneath it. Closing it returns you to the same screen,
+with any pending confirmation still pending.
 
 ## Readiness checks
 

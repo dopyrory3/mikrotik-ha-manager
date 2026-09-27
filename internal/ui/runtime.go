@@ -136,7 +136,7 @@ func renderRuntime(m Model) string {
 	}
 
 	b.WriteString("\n\n")
-	hint := "r: refresh, d: deploy, x: remove, tab: overview, q: quit"
+	hint := "r: refresh, d: deploy, x: remove, tab: overview, ?: help, q: quit"
 	if m.runtimePending != nil {
 		hint = "y: confirm, n/esc: cancel"
 	}

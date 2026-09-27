@@ -71,6 +71,8 @@ type Model struct {
 	runtimeErr      error
 	runtimePending  *pendingRuntimeAction
 
+	showHelp bool // the "?" overlay (help.go) is open over the current screen
+
 	width, height int
 	quitting      bool
 }
@@ -171,7 +173,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.showHelp {
+		return m.handleHelpKey(msg)
+	}
+
 	switch msg.String() {
+	case "?":
+		m.showHelp = true
+		return m, nil
+
 	case "q", "ctrl+c":
 		m.quitting = true
 		if m.cancel != nil {
@@ -221,6 +231,9 @@ func (m Model) enterDriftScreen() (tea.Model, tea.Cmd) {
 func (m Model) View() string {
 	if m.quitting {
 		return ""
+	}
+	if m.showHelp {
+		return renderHelp(m)
 	}
 	switch m.screen {
 	case screenDrift:

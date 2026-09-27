@@ -119,7 +119,7 @@ func statusLine(m Model) string {
 	if m.writeMode {
 		mode = "write"
 	}
-	return fmt.Sprintf(" %s | %s | 2: drift, 3: runtime, q: quit ", m.pair.Name, mode)
+	return fmt.Sprintf(" %s | %s | 2: drift, 3: runtime, ?: help, q: quit ", m.pair.Name, mode)
 }
 
 func renderVerdict(v Verdict, checks []Check) string {
