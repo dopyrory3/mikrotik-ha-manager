@@ -15,6 +15,7 @@ var (
 	styleDegraded = lipgloss.NewStyle().Bold(true).Foreground(colorDegraded)
 	styleDown     = lipgloss.NewStyle().Bold(true).Foreground(colorDown)
 	styleMuted    = lipgloss.NewStyle().Foreground(colorMuted)
+	styleAccent   = lipgloss.NewStyle().Foreground(colorAccent)
 
 	stylePanel = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).

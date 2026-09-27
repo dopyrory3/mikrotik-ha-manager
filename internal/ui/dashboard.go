@@ -115,11 +115,16 @@ func routerPanel(title string, router config.RouterConfig, snap poll.Snapshot, h
 }
 
 func statusLine(m Model) string {
-	mode := "read-only"
-	if m.writeMode {
-		mode = "write"
+	return fmt.Sprintf(" %s | %s | 2: drift, 3: runtime, 4: apply, q: quit ", m.pair.Name, modeLabel(m.writeMode))
+}
+
+// modeLabel is the read/write mode as the status bar shows it (project.md
+// §7.1, §7.3).
+func modeLabel(writeMode bool) string {
+	if writeMode {
+		return "write"
 	}
-	return fmt.Sprintf(" %s | %s | 2: drift, 3: runtime, q: quit ", m.pair.Name, mode)
+	return "read-only"
 }
 
 func renderVerdict(v Verdict, checks []Check) string {
