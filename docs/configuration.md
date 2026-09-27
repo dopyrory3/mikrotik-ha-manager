@@ -40,7 +40,7 @@ pairs:
         - ip/dhcp-server/network
         - ip/dhcp-server/lease   # static only
         - ip/dns/static
-        - ip/route               # excluding per-router routes
+        - ip/route               # only routes commented "mtha:..."
         - ip/service
         - user
         - system/script
@@ -205,6 +205,13 @@ literal config diff.
 
 - the router-assigned `.id` field
 - any entry marked `dynamic: true`
+- in `ip/route`, any route whose comment does not start with `mtha:` —
+  route sync is opt-in (see below)
+- read-only runtime state RouterOS reports alongside config: firewall
+  `bytes`/`packets` counters, `invalid`, `running`, script and scheduler
+  `run-count`/`next-run`/`owner`, lease `status`/`last-seen`, route
+  `active`/`inactive`, and similar (the full list is `sectionStateFields` in
+  `internal/model/normalize.go`)
 - any field named in `exempt` as `<section>.<field>`
 
 **Treated as equal:**
@@ -218,8 +225,8 @@ literal config diff.
 
 | Section | Identity |
 | --- | --- |
-| any | the `comment` field, if present and non-empty |
-| `ip/firewall/filter`, `nat`, `mangle`, `raw` | `chain` plus an ordinal within that chain |
+| any | the `comment` field, if present and non-empty; a repeated comment becomes `web`, `web#2`, `web#3`, ... in list order |
+| `ip/firewall/filter`, `nat`, `mangle`, `raw` | `chain` plus an ordinal counted from the preceding commented rule in that chain: `input@allow-ssh#2`, or `input#2` before the chain's first commented rule |
 | `ip/firewall/address-list` | `list` + `address` |
 | `ip/dns/static` | `address` |
 | `ip/route` | `dst-address` → `gateway` |
@@ -228,14 +235,22 @@ literal config diff.
 Practical consequences:
 
 - **Commenting your rules is the single highest-value habit here.** A
-  commented rule is matched reliably; an uncommented firewall rule falls back
-  to chain plus position, so inserting a rule near the top shifts every
-  ordinal below it and shows up as a cascade of false diffs.
+  commented rule is matched reliably. An uncommented firewall rule is matched
+  by its position after the nearest commented rule above it in the same
+  chain, so inserting a rule only re-identifies the uncommented rules between
+  it and the next commented rule — every commented rule acts as a fixed
+  anchor that stops the cascade.
+- **Routes are opt-in.** Only routes you tag with a comment starting
+  `mtha:` (e.g. `mtha:vpn-site-b`) are compared or synced; everything else in
+  `ip/route` — connected routes, each router's own default route, anything
+  per-router — is ignored entirely, so it can never show as drift or be
+  overwritten by an apply. A tagged route is identified by that comment.
 - Two entries on one router that resolve to the same identity are paired by
   encounter order rather than one overwriting the other.
 - Section order in the drift output follows your `sections` list, and hunks
   follow router A's order, so results are stable between runs.
 
 `mtha` reports *what* differs. Which side is the source of truth for a given
-hunk is a decision made at apply time, not by the diff engine — and apply is
-milestone 3.
+hunk is a decision made at apply time, not by the diff engine: you choose a
+direction per hunk or per section on the Drift screen and review the
+resulting plan on the Apply screen (see [usage.md](usage.md#apply)).

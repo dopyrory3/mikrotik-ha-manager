@@ -61,7 +61,7 @@ func run() error {
 
 	if pairName == "" {
 		if len(file.Pairs) > 1 {
-			return fmt.Errorf("multiple pairs defined in %s; pass -pair (pair selection screen lands in a later milestone)", configPath)
+			return fmt.Errorf("multiple pairs defined in %s; pass -pair to choose one", configPath)
 		}
 		pairName = file.Pairs[0].Name
 	}

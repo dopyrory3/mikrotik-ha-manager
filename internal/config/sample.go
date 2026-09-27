@@ -45,7 +45,7 @@ pairs:
         - ip/dhcp-server/network
         - ip/dhcp-server/lease   # static only
         - ip/dns/static
-        - ip/route               # excluding per-router routes
+        - ip/route               # only routes commented "mtha:..."
         - ip/service
         - user
         - system/script
