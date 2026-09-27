@@ -27,9 +27,10 @@ Errors go to stderr prefixed with `mtha:` and the process exits non-zero —
 including a missing config file, an unparseable one, a pair that is missing
 router `a` or `b`, and an unset credential variable.
 
-`-write` gates the Runtime screen's deploy/remove actions and the Apply
-screen, shown in the status bar as `read-only` or `write`; without it you can
-still preview what deploy, remove or apply would do, just not confirm it.
+`-write` gates every write: the Apply screen, which is also where the
+Runtime screen's deploy/remove run. The mode is shown in the status bar as
+`read-only` or `write`. Without it you can still see the dry run of a deploy,
+remove or apply, just not confirm it.
 Failover, which will use it too, arrives in a later milestone.
 
 ## Screens
@@ -45,7 +46,8 @@ The landing screen. Two panels, one per router:
   when unreachable.
 - **Identity**, **version**, **uptime**, **CPU** for each router.
 - **VRRP state** per instance, coloured by state (`master` green, `backup`
-  yellow).
+  yellow). `unknown` means the router's reply didn't positively say master or
+  backup; mtha treats such a router as a possible master.
 
 Below the panels is a single **readiness verdict** with the individual checks
 that produced it. The status bar shows the pair name, the read/write mode, and
@@ -108,6 +110,9 @@ on-master/on-backup scripts and periodic snapshot scheduler job project.md
 or a leading `# mtha:...` comment line inside a script body) so it can be
 found again and cleanly removed, and so a hand-written on-master/on-backup
 script is never silently overwritten — that shows as `conflict` instead.
+Objects are matched by that tag, not by name: a VRRP interface (or scheduler
+job) you created by hand with the same name is reported as `conflict` and is
+never adopted, changed or removed.
 
 The on-master/on-backup scripts log the transition and, if
 `runtime.toggles` is set, enable (master) or disable (backup) the named DHCP
@@ -122,18 +127,37 @@ The screen lists, per router, every object it manages and its state:
 | `missing` | Not present on that router yet |
 | `mismatched` | Present, but one or more fields differ from the desired config |
 | `ok` | Present and matching |
-| `conflict` | A guarded field (on-master/on-backup) already holds a non-mtha value; deploy won't overwrite it |
+| `conflict` | A guarded field (on-master/on-backup) already holds a non-mtha value, or an object with the same name exists without mtha's tag (`exists, not managed by mtha`); deploy won't overwrite it and remove won't delete it |
 
-`d` (deploy) and `x` (remove) both show a confirmation listing exactly what
-will run before anything happens — visible even without `-write`, so you can
-preview it read-only. Confirming (`y`) only actually writes with `-write` set;
-without it you'll see `read-only — restart with -write to actually run this`.
-Removing flags any VRRP interface deletion on a router currently holding VRRP
-master with a `‼`, since it can drop a live VIP.
+`d` (deploy) and `x` (remove) never write from this screen. They read both
+routers fresh, plan the exact REST operations, and open the
+[Apply](#apply) screen with that dry run (titled `runtime deploy` or
+`runtime remove`). From there it runs exactly like a sync:
+
+- a backup on each router first;
+- `y`, plus `Y` for a router that may hold VRRP master (a deploy or remove
+  touches both routers, so expect to need it);
+- a recheck against fresh reads just before running;
+- stop at the first failure;
+- then a re-verify, whose result also updates this screen.
+
+Deploy creates what's missing and patches mismatched fields. It never
+resets a VRRP interface's priority (see
+[configuration.md](configuration.md#runtime)). Remove deletes each VIP
+before its VRRP interface. Anything left alone on purpose, such as a
+`conflict`, is listed under **Skipped** with the reason. Without `-write`
+you can still see the dry run; confirming only tells you the session is
+read-only.
+
+Only one write runs at a time. While an apply or a runtime deploy/remove is
+running (or the Apply screen is still planning one), `d`/`x` are refused and
+the screen says why.
 
 ### Apply
 
-Press `4` (or `tab` from Runtime) to open it. Every time you enter the screen
+Press `4` (or `tab` from Runtime) to open it. (The Runtime screen's `d`/`x`
+open it too, with a runtime deploy/remove plan instead of a sync; see
+[Runtime](#runtime).) Every time you enter the screen
 it reads the selected sections fresh from both routers and builds a **dry
 run**: the exact REST operations it would send, numbered and grouped by the
 router they write to, each with a one-line explanation.
@@ -148,13 +172,20 @@ router they write to, each with a one-line explanation.
   position as on the source.
 - Selected hunks that won't be written are listed under **Skipped** with a
   reason: the hunk no longer differs, the entry is a user (REST can't read
-  passwords, so creating one would leave it passwordless), or it would add
-  or remove a built-in `ip/service` entry.
+  passwords, so creating one would leave it passwordless), it would add
+  or remove a built-in `ip/service` entry, or it could lock mtha out of the
+  target router mid-apply. That last one covers changing the `port`,
+  `disabled` or `address` of the target's `www-ssl` service (mtha's REST
+  API), and removing the user mtha logs in to the target as (the router's
+  `user` in the pair file) or changing that user's `group` or `disabled`.
+  Make such changes by hand.
 
 Press `y` to apply. Without `-write` this only tells you the session is
-read-only. If the plan writes to a router that currently holds VRRP master —
-or whose VRRP state isn't known (not polled yet, unreachable) — you must then
-also press `Y` (shift+y); `n`/`esc` cancels. Just before running, mtha
+read-only. If the plan writes to a router that may hold VRRP master, you must
+then also press `Y` (shift+y); `n`/`esc` cancels. That is any router not
+positively known to be backup: one reporting master, one not polled yet or
+unreachable, one whose VRRP read failed, one with no VRRP entries, or one with
+any entry whose state is `unknown`. Just before running, mtha
 re-reads both routers and rebuilds the plan; if anything changed, nothing is
 written and the updated plan is shown for review instead.
 
@@ -178,9 +209,10 @@ Events is a single timeline, newest first, merging:
   `vrrp` or `netwatch` topic, and entries whose message starts with `mtha:`
   (written by the on-master/on-backup scripts Runtime deploys).
 - **The tool's own actions** from this session, shown with source `tool`.
-  Today that is Runtime deploy/remove. The Apply screen's operations are not
-  fed into the journal yet, and failover actions will follow once that
-  milestone lands. A failed action's kind is shown in red with its error
+  Today that is each finished apply (one `sync` row per router it wrote to,
+  e.g. `→ B: apply ip/firewall/filter: 3/3 ops`, recorded whether it
+  succeeded or stopped) and Runtime deploy/remove. Failover actions will
+  follow once that milestone lands. A failed action's kind is shown in red with its error
   appended.
 
 | Column | Meaning |
@@ -240,10 +272,8 @@ Runtime screen:
 | Key | Action |
 | --- | --- |
 | `r` | Re-verify runtime status |
-| `d` | Show a deploy confirmation |
-| `x` | Show a remove confirmation |
-| `y` | Confirm the pending deploy/remove (requires `-write`) |
-| `n`, `esc` | Cancel the pending confirmation |
+| `d` | Plan a deploy and open its dry run on the Apply screen |
+| `x` | Plan a remove and open its dry run on the Apply screen |
 
 Apply screen:
 
@@ -274,8 +304,8 @@ Help overlay:
 
 `?` opens a help overlay on any screen, listing the global keys plus the
 ones for the screen you opened it from. While it is open every other key is
-ignored — so, for instance, a stray `y` can't confirm a pending Runtime
-deploy/remove underneath it. Closing it returns you to the same screen,
+ignored — so, for instance, a stray `y` can't confirm a pending apply or
+Runtime deploy/remove underneath it. Closing it returns you to the same screen,
 with any pending confirmation still pending.
 
 ## Readiness checks
@@ -288,7 +318,7 @@ failing ones with a note. Before the first poll, the verdict is `Unknown`.
 | Both routers reachable | Both polled successfully via the API |
 | RouterOS versions match | The `version` strings are identical |
 | No unresolved drift in synced sections | Drift has been fetched and every section is clean |
-| Exactly one master per VRRP instance | For each VRRP instance seen on either router, exactly one side reports `master` |
+| Exactly one master per VRRP instance | For each VRRP instance seen on either router, exactly one side reports `master`, and no entry's state is `unknown` |
 | Runtime logic present and identical on both routers | Runtime has been verified and every managed object is `ok` on both routers |
 | Standby netwatch targets up | Every netwatch entry on both routers reports status `up` |
 

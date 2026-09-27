@@ -1,7 +1,8 @@
 // Package plan is the dry-run planner and executor behind the Apply screen
-// (project.md §5.4, §7.2, milestone 3 in §9). It is the single write path
-// for config sync: every write mtha makes to sync config is an Op in a Plan,
-// and every Plan is shown to the operator before it runs (§7.3).
+// (project.md §5.4, §7.2, milestone 3 in §9). It is the single write path:
+// every write mtha makes — config sync, and Runtime deploy/remove (whose
+// Ops internal/runtime builds) — is an Op in a Plan, and every Plan is shown
+// to the operator before it runs (§7.3).
 //
 // Build turns the operator's selected diff hunks, each with an explicit
 // direction (A→B or B→A, §5.3), into an ordered list of REST operations
@@ -20,8 +21,9 @@
 // a hunk that has since been resolved or changed is reported in
 // Plan.Skipped instead of producing a stale write. Hunks that can't be
 // synced safely (creating users, whose passwords REST can't read; adding or
-// removing entries in fixed-set sections like ip/service) are skipped with a
-// reason too.
+// removing entries in fixed-set sections like ip/service; changes that could
+// lock mtha out of the target, such as moving its www-ssl service or
+// removing the user it logs in as) are skipped with a reason too.
 //
 // Build is pure — no I/O — which keeps the planner golden-testable. Execute
 // performs a single Op; the caller (the Apply screen) runs a plan one Op at a

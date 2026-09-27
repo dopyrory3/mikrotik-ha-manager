@@ -52,7 +52,7 @@ func routerMux(vrrp http.HandlerFunc) *http.ServeMux {
 
 func healthyRouterMux() *http.ServeMux {
 	return routerMux(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `[{"name":"vrrp-lan","vrrp-state":"master"}]`)
+		io.WriteString(w, `[{"name":"vrrp-lan","master":"true","backup":"false"}]`)
 	})
 }
 
@@ -81,7 +81,7 @@ func TestPollEmitsReachableSnapshot(t *testing.T) {
 	if snap.Identity == nil || snap.Identity.Name != "core-a" {
 		t.Errorf("Identity = %+v, want core-a", snap.Identity)
 	}
-	if len(snap.VRRP) != 1 || snap.VRRP[0].State != "master" {
+	if len(snap.VRRP) != 1 || snap.VRRP[0].Role() != routeros.RoleMaster {
 		t.Errorf("VRRP = %+v, want one master", snap.VRRP)
 	}
 	if len(snap.Netwatch) != 1 || snap.Netwatch[0].Status != "up" {

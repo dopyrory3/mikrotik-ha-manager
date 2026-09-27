@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"mtha/internal/config"
+	"mtha/internal/plan"
 )
 
 func helpTestModel() Model {
@@ -55,7 +56,7 @@ func TestHelpShowsCurrentScreenKeys(t *testing.T) {
 	m, _ = pressKey(t, m, "?")
 
 	view := m.View()
-	if !strings.Contains(view, "Show a deploy confirmation") {
+	if !strings.Contains(view, "Plan a deploy") {
 		t.Errorf("runtime help missing runtime keys:\n%s", view)
 	}
 	if strings.Contains(view, "Re-fetch drift") {
@@ -67,20 +68,20 @@ func TestHelpShowsCurrentScreenKeys(t *testing.T) {
 }
 
 // With the overlay open, a key meant for the screen underneath must not
-// act on it — above all "y" confirming a pending runtime write.
+// act on it — above all "y" confirming a pending write.
 func TestHelpSwallowsScreenKeys(t *testing.T) {
 	m := helpTestModel()
 	m.writeMode = true
-	m.screen = screenRuntime
-	m.runtimePending = &pendingRuntimeAction{kind: runtimeActionRemove}
+	m.screen = screenApply
+	m.apply = applyState{kind: applyRuntimeRemove, stage: applyReview, plan: plan.Plan{Ops: []plan.Op{plan.BackupOp("a", "bk")}}}
 
 	m, _ = pressKey(t, m, "?")
 	m, cmd := pressKey(t, m, "y")
-	if cmd != nil || m.runtimePending == nil || m.runtimeFetching {
-		t.Error("y while help was open acted on the pending runtime confirmation")
+	if cmd != nil || m.apply.stage != applyReview {
+		t.Error("y while help was open acted on the pending confirmation")
 	}
 	m, _ = pressKey(t, m, "1")
-	if m.screen != screenRuntime {
+	if m.screen != screenApply {
 		t.Errorf("screen = %v, want number keys ignored while help is open", m.screen)
 	}
 	if !m.showHelp {

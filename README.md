@@ -20,7 +20,7 @@ deploying, verifying, syncing and rehearsing.
 > Overview, Drift, Runtime
 > (VRRP interface provisioning, netwatch/on-master/on-backup/scheduler
 > automation), Apply (selective sync with dry run, backup and verification),
-> and Events (merged router log and Runtime-action timeline). Milestone 5
+> and Events (merged router log and apply/Runtime-action timeline). Milestone 5
 > (planned failover) has not started. See [Status](#status) below.
 
 ## Requirements
@@ -74,9 +74,10 @@ See [docs/usage.md](docs/usage.md) for screens and keybindings, and
 ## Safety model
 
 - **Read-only unless you ask.** Write operations require `-write`; the mode is
-  shown in the status bar. The Runtime screen's deploy/remove actions always
-  show what they'd do first, even read-only — only confirming with `-write`
-  set actually writes anything.
+  shown in the status bar. Every write, including the Runtime screen's
+  deploy/remove, is shown as a dry run first, even read-only. Only
+  confirming with `-write` set actually writes anything, and only one write
+  runs at a time.
 - Credentials are resolved from the environment at run time and never read
   from, or written to, the pair file.
 - All API traffic is HTTPS. `insecure_tls` is an explicit per-router opt-in
@@ -85,9 +86,10 @@ See [docs/usage.md](docs/usage.md) for screens and keybindings, and
 - Every object Runtime deploys is tagged (`mtha:` comments, or a leading
   `# mtha:` line in a script body) so it can be verified and removed cleanly,
   and so it never silently overwrites a hand-written on-master/on-backup
-  script — that surfaces as `conflict` instead. Removing a VRRP interface
-  currently holding master is flagged before you confirm.
-- Apply shows every REST operation before anything is written, starts each
+  script or adopts a same-named hand-made object — those surface as
+  `conflict` instead.
+- Apply (and a Runtime deploy/remove, which runs through it) shows every
+  REST operation before anything is written, starts each
   router's writes with `/system/backup/save`, and re-checks the plan against
   fresh reads just before running — if the routers changed, nothing is
   written and the new plan is shown instead. Writing to the current VRRP

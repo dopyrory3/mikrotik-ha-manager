@@ -55,6 +55,7 @@ pairs:
         - interface/vrrp.priority
         - ip/address             # per-router interface addresses
         - ip/service.certificate # each router's own self-signed cert
+        - ip/service.port        # router b's REST API (www-ssl) is on 8443
         - user.last-logged-in    # updates independently on every login
         # runtime.toggles below enables these on the master and disables
         # them on the standby, so "disabled" differs by design:

@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"mtha/internal/config"
+	"mtha/internal/events"
 	"mtha/internal/plan"
 	"mtha/internal/poll"
 	"mtha/internal/routeros"
@@ -251,6 +252,48 @@ func TestApplyUnknownVRRPStateRequiresSecondConfirmation(t *testing.T) {
 	}
 }
 
+// The master check fails closed on the VRRP payload itself: only a target
+// whose every entry positively decodes as backup gets a single-y apply.
+// Payloads are decoded as the poller would decode them, in both the flag
+// and vrrp-state shapes.
+func TestApplyMasterCheckFailsClosedOnVRRPPayload(t *testing.T) {
+	cases := []struct {
+		name        string
+		payload     string
+		wantConfirm bool
+	}{
+		{"flag master", `[{"name":"vrrp-lan","master":"true","backup":"false"}]`, true},
+		{"flag backup", `[{"name":"vrrp-lan","master":"false","backup":"true"}]`, false},
+		{"vrrp-state backup", `[{"name":"vrrp-lan","vrrp-state":"backup"}]`, false},
+		{"no role reported", `[{"name":"vrrp-lan","running":"true"}]`, true},
+		{"one entry unknown", `[{"name":"vrrp-lan","backup":"true"},{"name":"vrrp-wan","vrrp-state":"init"}]`, true},
+		{"no vrrp entries", `[]`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _, rb := applyFixture(t, true, "backup")
+			var vrrp []routeros.VRRPInstance
+			if err := json.Unmarshal([]byte(tc.payload), &vrrp); err != nil {
+				t.Fatal(err)
+			}
+			m.snapshots["b"] = poll.Snapshot{Router: "b", VRRP: vrrp}
+
+			m = drive(t, m, key("4"))
+			m = drive(t, m, key("y"))
+
+			if tc.wantConfirm {
+				if m.apply.stage != applyConfirmMaster || len(rb.writeLog()) != 0 {
+					t.Fatalf("stage = %v writes = %v, want the Y confirmation and nothing written", m.apply.stage, rb.writeLog())
+				}
+				return
+			}
+			if m.apply.stage != applyDone || len(rb.writeLog()) != 2 {
+				t.Fatalf("stage = %v writes = %v, want a single-y apply to a positive backup", m.apply.stage, rb.writeLog())
+			}
+		})
+	}
+}
+
 // If the routers change between showing the plan and confirming it, the
 // pre-run recheck shows the new plan instead of running the old one.
 func TestApplyRecheckRefusesStalePlan(t *testing.T) {
@@ -293,6 +336,76 @@ func TestApplyStopsWhenBackupFails(t *testing.T) {
 	if sd := m.apply.residual[filter]; sd.Clean() {
 		t.Error("verification should still report the unresolved hunk")
 	}
+}
+
+// The Apply screen passes each router's configured REST user to the
+// planner, so a hunk that would delete the user mtha logs in to the target
+// as is skipped rather than planned.
+func TestApplyRefusesToDeleteTargetAPIUser(t *testing.T) {
+	ra := newFakeRouter(map[string][]map[string]any{"user": {}})
+	rb := newFakeRouter(map[string][]map[string]any{"user": {
+		{".id": "*1", "name": "api-b", "group": "full"},
+	}})
+	pollers := map[poll.RouterKey]*poll.Poller{
+		"a": poll.New("a", testClient(t, ra), pollInterval),
+		"b": poll.New("b", testClient(t, rb), pollInterval),
+	}
+	pair := &config.Pair{
+		Name:    "core",
+		Routers: map[string]config.RouterConfig{"a": {User: "api-a"}, "b": {User: "api-b"}},
+		Sync:    config.SyncConfig{Sections: []string{"user"}},
+	}
+	m := New(pair, true, pollers)
+	m.setSelection("user", plan.HunkRef{Identity: "api-b"}, plan.AtoB)
+
+	m = drive(t, m, key("4"))
+
+	if !m.apply.plan.Empty() || len(m.apply.plan.Skipped) != 1 || !strings.Contains(m.apply.plan.Skipped[0].Reason, "lock mtha out") {
+		t.Fatalf("want the delete skipped as a lockout:\n%s", m.apply.plan.Render())
+	}
+}
+
+// A finished apply is journalled for the Events timeline: one sync action
+// per target router, with its op count, whether it succeeded or stopped.
+func TestApplyIsRecordedOnTimeline(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		m, _, _ := applyFixture(t, true, "backup")
+		m = drive(t, m, key("4"))
+		m = drive(t, m, key("y"))
+
+		got := m.journal.Actions()
+		if len(got) != 1 {
+			t.Fatalf("actions = %+v, want one", got)
+		}
+		a := got[0]
+		if a.Kind != events.ActionSync || a.Target != "b" || a.Summary != "apply ip/firewall/filter: 2/2 ops" || a.Err != nil {
+			t.Errorf("action = %+v", a)
+		}
+	})
+
+	t.Run("stopped", func(t *testing.T) {
+		m, _, rb := applyFixture(t, true, "backup")
+		rb.failPath = "/system/backup/save"
+		m = drive(t, m, key("4"))
+		m = drive(t, m, key("y"))
+
+		got := m.journal.Actions()
+		if len(got) != 1 || got[0].Summary != "apply ip/firewall/filter: 0/2 ops" || got[0].Err == nil {
+			t.Fatalf("actions = %+v, want one failed sync action", got)
+		}
+		if tl := m.timeline(); len(tl) != 1 || !tl[0].Failed || tl[0].Kind != string(events.ActionSync) {
+			t.Errorf("timeline = %+v", tl)
+		}
+	})
+
+	t.Run("not confirmed", func(t *testing.T) {
+		m, _, _ := applyFixture(t, false, "backup")
+		m = drive(t, m, key("4"))
+		m = drive(t, m, key("y"))
+		if got := m.journal.Actions(); len(got) != 0 {
+			t.Errorf("actions = %+v, want none for a plan that never ran", got)
+		}
+	})
 }
 
 func TestApplyWithoutSelectionExplainsHowToSelect(t *testing.T) {

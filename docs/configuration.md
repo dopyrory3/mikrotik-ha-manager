@@ -50,6 +50,7 @@ pairs:
         - interface/vrrp.priority
         - ip/address             # per-router interface addresses
         - ip/service.certificate # each router's own self-signed cert
+        - ip/service.port        # router b's REST API (www-ssl) is on 8443
         - user.last-logged-in    # updates independently on every login
         - ip/dhcp-server.disabled
         - ip/route.disabled
@@ -163,7 +164,11 @@ per-router state rather than config and will otherwise show up as permanent,
 unresolvable drift: `ip/service.certificate` (each router holds its own
 self-signed certificate for `www-ssl` unless you've deliberately installed a
 shared one) and `user.last-logged-in` (updates independently every time
-either router is logged into).
+either router is logged into). If you sync `ip/service` and one router's
+REST API is on a non-standard `port`, also exempt `ip/service.port`, as the
+sample does: Apply refuses to change the target's `www-ssl` port, disabled
+flag or address list (it would cut mtha off mid-apply), so that drift could
+otherwise never be resolved.
 
 ### Runtime
 
@@ -174,10 +179,21 @@ either router is logged into).
 | `priority_backup` | int | VRRP priority a healthy standby holds |
 | `priority_degraded` | int | Priority the up/down scripts drop a router to when its targets are unreachable |
 
-`priority_master`/`priority_backup` set the initial VRRP priority for routers
-`a`/`b` when the Runtime screen provisions a VRRP interface; `priority_degraded`
-and `netwatch_targets` parameterize the netwatch up/down scripts deployed
-alongside it (see [Runtime screen](usage.md#runtime)).
+`priority_master`/`priority_backup` are the base VRRP priority of routers
+`a`/`b`: what the Runtime screen creates a VRRP interface with.
+`priority_degraded` and `netwatch_targets` parameterize the netwatch up/down
+scripts deployed alongside it (see [Runtime screen](usage.md#runtime)):
+
+- a target going down drops that router's priority to `priority_degraded`;
+- a target coming back up restores the router's **own** base priority
+  (`priority_master` on `a`, `priority_backup` on `b`), and only once every
+  mtha netwatch entry on that router is up again.
+
+The scripts only change VRRP interfaces mtha manages (comment
+`mtha:vrrp:<name>`). Because netwatch (and, later, planned failover) moves
+priority on purpose, deploy never resets the priority of a VRRP interface
+that already exists, and verify accepts either the base or the degraded
+priority as `ok`.
 
 | Field | Type | Notes |
 | --- | --- | --- |

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"mtha/internal/config"
+	"mtha/internal/model"
+	"mtha/internal/plan"
 	"mtha/internal/routeros"
 )
 
@@ -40,97 +42,39 @@ func simpleOp() Op {
 	}
 }
 
-func TestEnsureCreatesMissing(t *testing.T) {
-	var gotMethod, gotPath string
-	var gotBody map[string]string
+// entries decodes a GET /rest/<section> payload the way GetSection does.
+func entries(t *testing.T, payload string) []model.Entry {
+	t.Helper()
+	var out []model.Entry
+	if err := json.Unmarshal([]byte(payload), &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/rest/tool/netwatch", func(w http.ResponseWriter, r *http.Request) {
-		gotMethod, gotPath = r.Method, r.URL.Path
-		if r.Method == http.MethodGet {
-			io.WriteString(w, `[]`)
-			return
-		}
-		json.NewDecoder(r.Body).Decode(&gotBody)
-		io.WriteString(w, `{}`)
-	})
-	client := testClient(t, mux)
-
-	state, err := ensure(context.Background(), client, simpleOp())
-	if err != nil {
-		t.Fatalf("ensure: %v", err)
+func TestDeployWritesCreatesMissing(t *testing.T) {
+	ops, skips := deployWrites("a", simpleOp(), nil)
+	if len(skips) != 0 || len(ops) != 1 {
+		t.Fatalf("ops = %v skips = %v, want one create", ops, skips)
 	}
-	if state != StateOK {
-		t.Errorf("state = %v, want OK", state)
-	}
-	if gotMethod != http.MethodPut {
-		t.Errorf("create method = %s, want PUT", gotMethod)
-	}
-	if gotPath != "/rest/tool/netwatch" {
-		t.Errorf("create path = %s, want /rest/tool/netwatch", gotPath)
-	}
-	if gotBody["host"] != "1.1.1.1" {
-		t.Errorf("create body = %v, want host=1.1.1.1", gotBody)
+	op := ops[0]
+	if op.Router != "a" || op.Method != plan.MethodCreate || op.Path != "/tool/netwatch" || op.Body["host"] != "1.1.1.1" {
+		t.Errorf("create = %s", op)
 	}
 }
 
-func TestEnsureNoopWhenAlreadyMatching(t *testing.T) {
-	writeCalled := false
-	mux := http.NewServeMux()
-	mux.HandleFunc("/rest/tool/netwatch", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			io.WriteString(w, `[{".id":"*1","host":"1.1.1.1","comment":"mtha:netwatch:1.1.1.1"}]`)
-			return
-		}
-		writeCalled = true
-	})
-	client := testClient(t, mux)
-
-	state, err := ensure(context.Background(), client, simpleOp())
-	if err != nil {
-		t.Fatalf("ensure: %v", err)
-	}
-	if state != StateOK {
-		t.Errorf("state = %v, want OK", state)
-	}
-	if writeCalled {
-		t.Error("ensure wrote when the entry already matched")
+func TestDeployWritesNothingWhenAlreadyMatching(t *testing.T) {
+	ops, skips := deployWrites("a", simpleOp(), entries(t, `[{".id":"*1","host":"1.1.1.1","comment":"mtha:netwatch:1.1.1.1"}]`))
+	if len(ops) != 0 || len(skips) != 0 {
+		t.Errorf("ops = %v skips = %v, want nothing for a matching entry", ops, skips)
 	}
 }
 
-func TestEnsurePatchesMismatchedField(t *testing.T) {
-	var gotMethod, gotPath string
-	var gotBody map[string]string
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/rest/tool/netwatch/", func(w http.ResponseWriter, r *http.Request) {
-		gotMethod, gotPath = r.Method, r.URL.Path
-		json.NewDecoder(r.Body).Decode(&gotBody)
-		io.WriteString(w, `{}`)
-	})
-	mux.HandleFunc("/rest/tool/netwatch", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `[{".id":"*1","host":"1.2.3.4","comment":"mtha:netwatch:1.1.1.1"}]`)
-	})
-	client := testClient(t, mux)
-
-	state, err := ensure(context.Background(), client, simpleOp())
-	if err != nil {
-		t.Fatalf("ensure: %v", err)
-	}
-	if state != StateOK {
-		t.Errorf("state = %v, want OK", state)
-	}
-	if gotMethod != http.MethodPatch {
-		t.Errorf("patch method = %s, want PATCH", gotMethod)
-	}
-	if gotPath != "/rest/tool/netwatch/*1" {
-		t.Errorf("patch path = %s, want /rest/tool/netwatch/*1", gotPath)
-	}
-	if gotBody["host"] != "1.1.1.1" {
-		t.Errorf("patch body = %v, want host corrected to 1.1.1.1", gotBody)
-	}
-	if _, ok := gotBody["comment"]; ok {
-		t.Errorf("patch body = %v, comment already matched and shouldn't be re-sent", gotBody)
+func TestDeployWritesPatchesMismatchedField(t *testing.T) {
+	ops, _ := deployWrites("a", simpleOp(), entries(t, `[{".id":"*1","host":"1.2.3.4","comment":"mtha:netwatch:1.1.1.1"}]`))
+	want := "PATCH /tool/netwatch/*1 {\"host\":\"1.1.1.1\"}"
+	if len(ops) != 1 || ops[0].String() != want {
+		t.Errorf("ops = %v, want %s (comment already matches, not re-sent)", ops, want)
 	}
 }
 
@@ -151,58 +95,87 @@ func vrrpOpWithGuard() Op {
 	}
 }
 
-func TestEnsureLeavesForeignGuardedFieldAlone(t *testing.T) {
-	var gotBody map[string]string
-	mux := http.NewServeMux()
-	mux.HandleFunc("/rest/interface/vrrp/", func(w http.ResponseWriter, r *http.Request) {
-		json.NewDecoder(r.Body).Decode(&gotBody)
-		io.WriteString(w, `{}`)
-	})
-	mux.HandleFunc("/rest/interface/vrrp", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `[{".id":"*1","name":"vrrp-lan","priority":"100","on-master":":log info \"hand written\""}]`)
-	})
-	client := testClient(t, mux)
-
-	state, err := ensure(context.Background(), client, vrrpOpWithGuard())
-	if err != nil {
-		t.Fatalf("ensure: %v", err)
+func TestDeployWritesLeavesForeignGuardedFieldAlone(t *testing.T) {
+	ops, skips := deployWrites("a", vrrpOpWithGuard(), entries(t, `[{".id":"*1","name":"vrrp-lan","priority":"100","on-master":":log info \"hand written\""}]`))
+	if len(ops) != 1 {
+		t.Fatalf("ops = %v, want one patch", ops)
 	}
-	if state != StateConflict {
-		t.Errorf("state = %v, want Conflict", state)
+	if _, ok := ops[0].Body["on-master"]; ok {
+		t.Errorf("patch body = %v, must not overwrite a foreign on-master script", ops[0].Body)
 	}
-	if _, ok := gotBody["on-master"]; ok {
-		t.Errorf("patch body = %v, must not overwrite a foreign on-master script", gotBody)
+	if ops[0].Body["priority"] != "200" {
+		t.Errorf("patch body = %v, want the non-conflicting priority field still patched", ops[0].Body)
 	}
-	if gotBody["priority"] != "200" {
-		t.Errorf("patch body = %v, want the non-conflicting priority field still patched", gotBody)
+	if len(skips) != 1 || !strings.Contains(skips[0], "on-master") {
+		t.Errorf("skips = %v, want the untouched on-master explained", skips)
 	}
 }
 
-func TestEnsureTreatsOwnScriptAsNoConflict(t *testing.T) {
-	writeCalled := false
-	mux := http.NewServeMux()
-	mux.HandleFunc("/rest/interface/vrrp/", func(w http.ResponseWriter, r *http.Request) {
-		writeCalled = true
-		io.WriteString(w, `{}`)
-	})
-	mux.HandleFunc("/rest/interface/vrrp", func(w http.ResponseWriter, r *http.Request) {
-		body, _ := json.Marshal(map[string]string{
-			".id": "*1", "name": "vrrp-lan", "priority": "200",
-			"on-master": onMasterScript("vrrp-lan", config.TogglesConfig{}),
-		})
-		w.Write([]byte("[" + string(body) + "]"))
-	})
-	client := testClient(t, mux)
+func TestDeployWritesTreatsOwnScriptAsNoConflict(t *testing.T) {
+	current, _ := json.Marshal([]map[string]string{{
+		".id": "*1", "name": "vrrp-lan", "priority": "200",
+		"on-master": onMasterScript("vrrp-lan", config.TogglesConfig{}),
+	}})
+	ops, skips := deployWrites("a", vrrpOpWithGuard(), entries(t, string(current)))
+	if len(ops) != 0 || len(skips) != 0 {
+		t.Errorf("ops = %v skips = %v, want nothing when the script is already mtha's own", ops, skips)
+	}
+}
 
-	state, err := ensure(context.Background(), client, vrrpOpWithGuard())
-	if err != nil {
-		t.Fatalf("ensure: %v", err)
+// A pre-toggles (log-only) mtha script carries the marker, so enabling
+// runtime.toggles later upgrades it in place rather than reporting conflict.
+func TestDeployWritesUpgradesOwnLogOnlyScriptToToggles(t *testing.T) {
+	current, _ := json.Marshal([]map[string]string{{
+		".id": "*1", "name": "vrrp-lan", "priority": "200",
+		"on-master": onMasterScript("vrrp-lan", config.TogglesConfig{}),
+	}})
+	op := vrrpOpWithGuard()
+	want := onMasterScript("vrrp-lan", config.TogglesConfig{VRRP: "vrrp-lan", DHCPServers: []string{"dhcp-lan"}})
+	op.Fields["on-master"] = want
+
+	ops, skips := deployWrites("a", op, entries(t, string(current)))
+	if len(ops) != 1 || ops[0].Body["on-master"] != want || len(skips) != 0 {
+		t.Errorf("ops = %v skips = %v, want on-master upgraded to the toggling script", ops, skips)
 	}
-	if state != StateOK {
-		t.Errorf("state = %v, want OK when the current script is already mtha's own", state)
+}
+
+func mutablePriorityOp() Op {
+	op := simpleOp()
+	op.Fields["priority"] = "200"
+	op.Mutable = map[string][]string{"priority": {"200", "50"}}
+	return op
+}
+
+// A degraded router's priority is healthy runtime state: deploy leaves it
+// alone (patching it back to base would preempt master onto a router whose
+// uplink is down). A priority outside the accepted set isn't patched
+// either, but the dry run says so.
+func TestDeployWritesLeavesMutablePriorityAlone(t *testing.T) {
+	for priority, wantSkip := range map[string]bool{"50": false, "200": false, "150": true} {
+		ops, skips := deployWrites("a", mutablePriorityOp(), entries(t,
+			`[{".id":"*1","host":"9.9.9.9","comment":"mtha:netwatch:1.1.1.1","priority":"`+priority+`"}]`))
+		if len(ops) != 1 || ops[0].String() != `PATCH /tool/netwatch/*1 {"host":"1.1.1.1"}` {
+			t.Errorf("priority %s: ops = %v, want only the static field patched", priority, ops)
+		}
+		if got := len(skips) == 1 && strings.Contains(skips[0], "priority is "+priority); got != wantSkip {
+			t.Errorf("priority %s: skips = %v, want skip = %v", priority, skips, wantSkip)
+		}
 	}
-	if writeCalled {
-		t.Error("ensure wrote when everything already matched")
+}
+
+func TestCheckAcceptsMutableValues(t *testing.T) {
+	for priority, want := range map[string]State{"200": StateOK, "50": StateOK, "150": StateMismatched} {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/rest/tool/netwatch", func(w http.ResponseWriter, r *http.Request) {
+			io.WriteString(w, `[{".id":"*1","host":"1.1.1.1","comment":"mtha:netwatch:1.1.1.1","priority":"`+priority+`"}]`)
+		})
+		state, _, err := check(context.Background(), testClient(t, mux), mutablePriorityOp())
+		if err != nil {
+			t.Fatalf("check: %v", err)
+		}
+		if state != want {
+			t.Errorf("priority %s: state = %v, want %v", priority, state, want)
+		}
 	}
 }
 
@@ -267,30 +240,67 @@ func TestVerifyToleratesPartialFailure(t *testing.T) {
 	}
 }
 
-func TestRemoveDeletesMatchedEntry(t *testing.T) {
-	var deletedPath string
-	mux := http.NewServeMux()
-	mux.HandleFunc("/rest/tool/netwatch/", func(w http.ResponseWriter, r *http.Request) {
-		deletedPath = r.URL.Path
-	})
-	mux.HandleFunc("/rest/tool/netwatch", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `[{".id":"*1","host":"1.1.1.1","comment":"mtha:netwatch:1.1.1.1"}]`)
-	})
-	client := testClient(t, mux)
+func TestRemoveWritesDeletesMatchedEntry(t *testing.T) {
+	ops, skips := removeWrites("b", simpleOp(), entries(t, `[{".id":"*1","host":"1.1.1.1","comment":"mtha:netwatch:1.1.1.1"}]`))
+	if len(ops) != 1 || ops[0].String() != "DELETE /tool/netwatch/*1" || ops[0].Router != "b" || len(skips) != 0 {
+		t.Errorf("ops = %v skips = %v", ops, skips)
+	}
+	if ops, _ := removeWrites("b", simpleOp(), nil); len(ops) != 0 {
+		t.Errorf("ops = %v, want nothing to remove when it isn't there", ops)
+	}
+}
 
-	plans := map[string]Plan{
-		"a": {Router: "a", Ops: []Op{simpleOp()}},
-		"b": {Router: "b"},
+// Writes reads both routers and plans a deploy: each router's writes start
+// with its backup, and the VRRP interface is created before its address.
+// Remove deletes in reverse, the address before the interface.
+func TestWritesPlansBackupFirstAndRemovesInReverse(t *testing.T) {
+	plans, err := BuildPlan(&config.Pair{VRRP: []config.VRRPInstance{fullInstance()}, Runtime: testRuntimeConfig()})
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
 	}
-	result := Remove(context.Background(), client, client, plans)
-	if result.Err != nil {
-		t.Fatalf("Remove: %v", result.Err)
+	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("Writes must only read, got %s %s", r.Method, r.URL.Path)
+		}
+		io.WriteString(w, `[]`)
+	}))
+
+	p, err := Writes(context.Background(), client, client, plans, ActionDeploy, "bk")
+	if err != nil {
+		t.Fatalf("Writes: %v", err)
 	}
-	if deletedPath != "/rest/tool/netwatch/*1" {
-		t.Errorf("deleted path = %s, want /rest/tool/netwatch/*1", deletedPath)
+	var got []string
+	for _, op := range p.Ops {
+		got = append(got, op.Router+" "+string(op.Method)+" "+op.Path)
 	}
-	if result.Status["a"][0].State != StateMissing {
-		t.Errorf("post-remove state = %v, want Missing", result.Status["a"][0].State)
+	want := []string{
+		"a POST /system/backup/save", "a PUT /interface/vrrp", "a PUT /ip/address", "a PUT /tool/netwatch", "a PUT /system/scheduler",
+		"b POST /system/backup/save", "b PUT /interface/vrrp", "b PUT /ip/address", "b PUT /tool/netwatch", "b PUT /system/scheduler",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("deploy plan =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if p.Ops[1].Body["priority"] != "200" || p.Ops[6].Body["priority"] != "100" {
+		t.Errorf("create priorities = %s / %s, want each router's base", p.Ops[1].Body["priority"], p.Ops[6].Body["priority"])
+	}
+
+	reads := map[string]map[string][]model.Entry{"a": {
+		"interface/vrrp": entries(t, `[{".id":"*1","name":"vrrp-lan","comment":"mtha:vrrp:vrrp-lan"}]`),
+		"ip/address":     entries(t, `[{".id":"*2","comment":"mtha:vrrp:vrrp-lan:10.0.0.1/24"}]`),
+	}}
+	rm := buildWrites(plans, reads, ActionRemove, "bk")
+	if r := rm.Render(); !strings.Contains(r, "2. DELETE /ip/address/*2") || !strings.Contains(r, "3. DELETE /interface/vrrp/*1") {
+		t.Errorf("remove plan should delete the address before the interface:\n%s", r)
+	}
+}
+
+func TestWritesFailsOnReadError(t *testing.T) {
+	plans := map[string]Plan{"a": {Router: "a", Ops: []Op{simpleOp()}}, "b": {Router: "b"}}
+	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	if _, err := Writes(context.Background(), client, client, plans, ActionDeploy, "bk"); err == nil {
+		t.Error("Writes should fail rather than plan from a partial read")
 	}
 }
 
@@ -312,36 +322,51 @@ func TestStatusCleanAndFirstIssue(t *testing.T) {
 	}
 }
 
-// A pre-toggles (log-only) mtha script carries the marker, so enabling
-// runtime.toggles later upgrades it in place rather than reporting conflict.
-func TestEnsureUpgradesOwnLogOnlyScriptToToggles(t *testing.T) {
-	var gotBody map[string]string
+// A hand-made VRRP interface with the name mtha would use, but without its
+// tag, is not mtha's: verify reports it as a conflict, and neither deploy
+// nor remove plans any write to it.
+func TestUntaggedSameNamedInterfaceIsNeverTouched(t *testing.T) {
+	const payload = `[{".id":"*5","name":"vrrp-lan","comment":"hand-made, production","priority":"150"}]`
 	mux := http.NewServeMux()
-	mux.HandleFunc("/rest/interface/vrrp/", func(w http.ResponseWriter, r *http.Request) {
-		json.NewDecoder(r.Body).Decode(&gotBody)
-		io.WriteString(w, `{}`)
-	})
 	mux.HandleFunc("/rest/interface/vrrp", func(w http.ResponseWriter, r *http.Request) {
-		body, _ := json.Marshal(map[string]string{
-			".id": "*1", "name": "vrrp-lan", "priority": "200",
-			"on-master": onMasterScript("vrrp-lan", config.TogglesConfig{}),
-		})
-		w.Write([]byte("[" + string(body) + "]"))
+		io.WriteString(w, payload)
 	})
 	client := testClient(t, mux)
+	op := vrrpOp(fullInstance(), "a", testRuntimeConfig())
+	plans := map[string]Plan{"a": {Router: "a", Ops: []Op{op}}, "b": {Router: "b"}}
 
-	op := vrrpOpWithGuard()
-	want := onMasterScript("vrrp-lan", config.TogglesConfig{VRRP: "vrrp-lan", DHCPServers: []string{"dhcp-lan"}})
-	op.Fields["on-master"] = want
-
-	state, err := ensure(context.Background(), client, op)
+	status, err := Verify(context.Background(), client, client, plans)
 	if err != nil {
-		t.Fatalf("ensure: %v", err)
+		t.Fatalf("Verify: %v", err)
 	}
-	if state != StateOK {
-		t.Errorf("state = %v, want OK", state)
+	if it := status["a"][0]; it.State != StateConflict || it.Note != foreignNote {
+		t.Errorf("verify = %+v, want conflict %q", it, foreignNote)
 	}
-	if gotBody["on-master"] != want {
-		t.Errorf("patch body = %v, want on-master upgraded to the toggling script", gotBody)
+
+	for _, action := range []Action{ActionDeploy, ActionRemove} {
+		p, err := Writes(context.Background(), client, client, plans, action, "bk")
+		if err != nil {
+			t.Fatalf("Writes: %v", err)
+		}
+		if !p.Empty() || len(p.Skipped) != 1 || !strings.Contains(p.Skipped[0].Reason, foreignNote) {
+			t.Errorf("%s plan = %s, want no writes and the interface reported as not mtha's", action, p.Render())
+		}
+	}
+}
+
+// An interface carrying mtha's tag is found by it, whatever else it holds.
+func TestTaggedInterfaceIsMatchedByTag(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/interface/vrrp", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `[{".id":"*1","name":"vrrp-lan","comment":"mtha:vrrp:vrrp-lan","priority":"50"}]`)
+	})
+	op := vrrpOp(fullInstance(), "a", testRuntimeConfig())
+
+	state, note, err := check(context.Background(), testClient(t, mux), op)
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if state != StateMismatched || note != "" {
+		t.Errorf("state = %v note = %q, want mismatched (fields differ), not a conflict", state, note)
 	}
 }

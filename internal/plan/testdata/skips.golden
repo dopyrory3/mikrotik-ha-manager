@@ -1,8 +1,13 @@
 router B:
   1. POST /system/backup/save {"name":"bk"}
        pre-apply backup of router b
-  2. PATCH /ip/service/*1 {"port":"443"}
-       update www-ssl to match router a
+  2. DELETE /user/*3
+       remove bob (not on router a)
+  3. PATCH /ip/service/*3 {"port":"22"}
+       update ssh to match router a
 skipped:
   user alice [A→B]: user passwords are not readable over REST; creating this user would leave it with no password
+  user admin [B→A]: changes group of the user mtha logs in to router a as; that could lock mtha out
+  user api-b [A→B]: mtha logs in to router b as this user; removing it would lock mtha out
+  ip/service www-ssl [A→B]: changes port of router b's REST API service; mtha could lose its connection mid-apply
   ip/service api [A→B]: entries in this section are built in; they can be changed but not added
