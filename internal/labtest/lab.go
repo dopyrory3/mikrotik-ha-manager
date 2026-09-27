@@ -291,6 +291,10 @@ func (l *Lab) Env() []string {
 	return env
 }
 
+// Password is the lab admin password, for tests that set up credentials
+// themselves (another pair name, one router's variable left out).
+func (l *Lab) Password() string { return l.password }
+
 // reset is every writing test's cleanup. It restores the golden backup;
 // if that fails (the router no longer answers, the login was changed, the
 // backup file was deleted) it falls back to recreating the containers, so

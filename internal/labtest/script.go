@@ -59,6 +59,15 @@ func (l *Lab) Binary() string {
 // lines, so assert on substrings, not on a screen layout.
 func (l *Lab) RunTUI(timeout time.Duration, args []string, inputs ...Input) (string, error) {
 	l.t.Helper()
+	return l.RunTUIEnv(timeout, l.Env(), args, inputs...)
+}
+
+// RunTUIEnv is RunTUI with env in place of the lab passwords, for runs that
+// test credential resolution itself: a missing or wrong password, or a pair
+// under another name. Any MTHA_*_PASSWORD inherited from the caller's
+// environment is dropped, so the run sees exactly the passwords in env.
+func (l *Lab) RunTUIEnv(timeout time.Duration, env []string, args []string, inputs ...Input) (string, error) {
+	l.t.Helper()
 	quoted := []string{shellQuote(l.Binary())}
 	for _, a := range args {
 		quoted = append(quoted, shellQuote(a))
@@ -68,7 +77,7 @@ func (l *Lab) RunTUI(timeout time.Duration, args []string, inputs ...Input) (str
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "script", "-qefc", "stty cols 80 rows 24; exec "+strings.Join(quoted, " "), "/dev/null")
 	cmd.Dir = l.root
-	cmd.Env = append(append(os.Environ(), "TERM=xterm-256color"), l.Env()...)
+	cmd.Env = append(append(inheritedEnv(), "TERM=xterm-256color"), env...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return "", err
@@ -113,6 +122,19 @@ func (l *Lab) RunTUI(timeout time.Duration, args []string, inputs ...Input) (str
 		}
 	}
 	return out, err
+}
+
+// inheritedEnv is the caller's environment less any mtha password.
+func inheritedEnv() []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(name, "MTHA_") && strings.HasSuffix(name, "_PASSWORD") && name != PasswordEnv {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return env
 }
 
 // terminal collects a run's output and answers the queries a real terminal
