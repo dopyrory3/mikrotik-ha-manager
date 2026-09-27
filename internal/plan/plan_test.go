@@ -261,3 +261,34 @@ func TestBuildNeverWritesVRRPRoleFlags(t *testing.T) {
 		}
 	}
 }
+
+// Current behaviour, recorded for docs/design-questions.md (question 1):
+// comment-first identity applies to name-keyed sections too, so a user
+// whose comment differs between the routers is two unrelated hunks. Syncing
+// both A→B deletes the user on B and skips the create (REST can't read the
+// password), leaving B without the user.
+func TestBuildUserCommentChangeDeletesWithoutRecreate(t *testing.T) {
+	a := []model.Entry{{".id": "*1", "name": "ops", "group": "full", "comment": "on-call"}}
+	b := []model.Entry{{".id": "*7", "name": "ops", "group": "full", "comment": "ops team"}}
+
+	p := Build([]SectionInput{{
+		Section: "user", A: a, B: b,
+		Choices: choose(AtoB, "on-call", "ops team"),
+	}}, Options{BackupName: "bk", Users: map[string]string{"a": "admin", "b": "admin"}})
+
+	var deletes []string
+	for _, op := range p.Ops {
+		if op.Method == MethodDelete {
+			deletes = append(deletes, op.Router+" "+op.Path)
+		}
+		if op.Method == MethodCreate {
+			t.Errorf("unexpected create %s %s", op.Router, op.Path)
+		}
+	}
+	if len(deletes) != 1 || deletes[0] != "b /user/*7" {
+		t.Errorf("deletes = %v, want [b /user/*7]", deletes)
+	}
+	if len(p.Skipped) != 1 || p.Skipped[0].Ref.Identity != "on-call" {
+		t.Errorf("skipped = %+v, want the create of on-call", p.Skipped)
+	}
+}

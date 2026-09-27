@@ -201,3 +201,19 @@ func TestCompareIgnoresUntaggedRoutes(t *testing.T) {
 		t.Fatalf("expected only the tagged route to be diffed, got %+v", sd.Hunks)
 	}
 }
+
+// Current behaviour, recorded for docs/design-questions.md (question 2):
+// commented rules match by comment regardless of position, so the same two
+// rules in the opposite order on each router compare clean even though
+// RouterOS evaluates a chain in list order and the policies differ.
+func TestCompareIgnoresCommentedRuleOrder(t *testing.T) {
+	allow := model.Entry{"chain": "forward", "action": "accept", "src-address": "192.0.2.10", "comment": "allow-host"}
+	drop := model.Entry{"chain": "forward", "action": "drop", "src-address": "192.0.2.0/24", "comment": "drop-subnet"}
+
+	a := []model.Entry{allow, drop}
+	b := []model.Entry{drop, allow}
+
+	if sd := Compare("ip/firewall/filter", a, b, nil); !sd.Clean() {
+		t.Fatalf("reordered commented rules now produce hunks (order drift detected?): %+v", sd.Hunks)
+	}
+}

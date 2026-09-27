@@ -51,7 +51,7 @@ pairs:
         - ip/address             # per-router interface addresses
         - ip/service.certificate # each router's own self-signed cert
         - ip/service.port        # router b's REST API (www-ssl) is on 8443
-        - user.last-logged-in    # updates independently on every login
+        - user.last-logged-in    # per-router; set by binary-API logins, not by REST
         - ip/dhcp-server.disabled
         - ip/route.disabled
     runtime:
@@ -164,8 +164,9 @@ Two field exemptions are worth adding to almost every pair, since they are
 per-router state rather than config and will otherwise show up as permanent,
 unresolvable drift: `ip/service.certificate` (each router holds its own
 self-signed certificate for `www-ssl` unless you've deliberately installed a
-shared one) and `user.last-logged-in` (updates independently every time
-either router is logged into). If you sync `ip/service` and one router's
+shared one) and `user.last-logged-in` (each router records its own; REST
+requests, mtha's polling included, do not move it, but a binary-API login
+does, so the two values differ — see `docs/lab-rest-contract.md`, `user`). If you sync `ip/service` and one router's
 REST API is on a non-standard `port`, also exempt `ip/service.port`, as the
 sample does: Apply refuses to change the target's `www-ssl` port, disabled
 flag or address list (it would cut mtha off mid-apply), so that drift could
