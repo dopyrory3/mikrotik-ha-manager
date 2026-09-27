@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"mtha/internal/diff"
+	"mtha/internal/model"
 	"mtha/internal/plan"
 	"mtha/internal/poll"
 	"mtha/internal/routeros"
@@ -280,6 +281,21 @@ func buildApplyPlan(ctx context.Context, clientA, clientB *routeros.Client, sect
 	for _, err := range errs {
 		if err != nil {
 			return plan.Plan{}, err
+		}
+	}
+
+	// The reference check's extra reads (docs/design-questions.md §3):
+	// sections a planned body names that weren't fetched above, read-only
+	// and only when some body names them. A failed read isn't fatal: the
+	// plan then warns that the reference couldn't be checked.
+	opts.Referents = map[plan.Read][]model.Entry{}
+	for _, rd := range plan.ReferenceReads(inputs, opts) {
+		client := clientA
+		if rd.Router == "b" {
+			client = clientB
+		}
+		if entries, err := client.GetSection(ctx, rd.Section); err == nil {
+			opts.Referents[rd] = entries
 		}
 	}
 	return plan.Build(inputs, opts), nil
@@ -573,6 +589,12 @@ func renderPlanOps(a applyState) []string {
 			lines = append(lines, styleMuted.Render("       "+op.Note))
 		}
 	}
+	if len(a.plan.Warnings) > 0 {
+		lines = append(lines, styleDegraded.Render("Warnings"))
+		for _, w := range a.plan.Warnings {
+			lines = append(lines, "  "+styleMuted.Render(w.String()))
+		}
+	}
 	if len(a.plan.Skipped) > 0 {
 		lines = append(lines, styleDegraded.Render("Skipped"))
 		for _, s := range a.plan.Skipped {
@@ -651,13 +673,16 @@ func renderApplyResult(a applyState) []string {
 		case sd.Clean():
 			lines = append(lines, fmt.Sprintf("  %-28s %s", section, styleReady.Render("clean")))
 		default:
-			residual += len(sd.Hunks)
-			ids := make([]string, 0, len(sd.Hunks))
+			residual += sd.Count()
+			ids := make([]string, 0, sd.Count())
 			for _, h := range sd.Hunks {
 				ids = append(ids, h.Identity)
 			}
+			for _, o := range sd.Order {
+				ids = append(ids, plan.OrderRef(o).String())
+			}
 			lines = append(lines, fmt.Sprintf("  %-28s %s %s", section,
-				styleDegraded.Render(fmt.Sprintf("%d residual", len(sd.Hunks))), styleMuted.Render(strings.Join(ids, ", "))))
+				styleDegraded.Render(fmt.Sprintf("%d residual", sd.Count())), styleMuted.Render(strings.Join(ids, ", "))))
 		}
 	}
 	if residual > 0 {

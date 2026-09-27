@@ -96,6 +96,9 @@ func setup(opts options, out io.Writer) (tea.Model, error) {
 	if err != nil {
 		return nil, err
 	}
+	for _, w := range file.Warnings {
+		fmt.Fprintln(out, "warning:", w)
+	}
 	if len(file.Pairs) == 0 {
 		return nil, fmt.Errorf("no pairs defined in %s", opts.configPath)
 	}

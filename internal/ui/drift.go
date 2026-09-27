@@ -185,7 +185,9 @@ func (m *Model) cycleHunkSelection(h diff.Hunk) {
 	}
 }
 
-// selectSection selects every hunk in the current section in one direction.
+// selectSection selects every hunk in the current section in one
+// direction, and its chains' order findings, which the planner reports as
+// skipped until it can plan a move.
 func (m *Model) selectSection(dir plan.Direction) {
 	if len(m.driftSections) == 0 {
 		return
@@ -193,6 +195,9 @@ func (m *Model) selectSection(dir plan.Direction) {
 	section := m.driftSections[m.driftSection]
 	for _, h := range m.currentHunks() {
 		m.setSelection(section, plan.RefOf(h), dir)
+	}
+	for _, o := range m.driftData[section].Order {
+		m.setSelection(section, plan.OrderRef(o), dir)
 	}
 }
 
@@ -218,6 +223,9 @@ func (m *Model) pruneDriftSelection(data map[string]diff.SectionDiff) {
 		present := make(map[plan.HunkRef]bool, len(sd.Hunks))
 		for _, h := range sd.Hunks {
 			present[plan.RefOf(h)] = true
+		}
+		for _, o := range sd.Order {
+			present[plan.OrderRef(o)] = true
 		}
 		for ref := range refs {
 			if !present[ref] {
@@ -292,7 +300,7 @@ func renderSectionList(m Model) string {
 		case !ok:
 			status = styleDown.Render("fetch failed")
 		case !sd.Clean():
-			status = styleDegraded.Render(fmt.Sprintf("%d hunk(s)", len(sd.Hunks)))
+			status = styleDegraded.Render(fmt.Sprintf("%d hunk(s)", sd.Count()))
 		default:
 			status = styleReady.Render("clean")
 		}
@@ -341,6 +349,20 @@ func renderHunkList(m Model) string {
 				}
 			}
 		}
+	}
+	// Order findings (docs/design-questions.md §2) are listed after the
+	// hunks. The cursor doesn't reach them; a/b select them with the rest
+	// of the section, and the plan reports them as skipped.
+	for _, o := range sd.Order {
+		marker := "      "
+		if dir, ok := m.driftSelected[section][plan.OrderRef(o)]; ok {
+			marker = styleAccent.Render("["+dir.String()+"]") + " "
+		}
+		names := make([]string, len(o.Moved))
+		for i, r := range o.Moved {
+			names[i] = plan.HunkRef{Identity: r.Identity, Occurrence: r.Occurrence}.String()
+		}
+		fmt.Fprintf(&b, "  %s%s chain %s: %d of %d rule(s) in a different order: %s\n", marker, styleDegraded.Render("↕ order"), o.Chain, len(o.Moved), o.Rules, strings.Join(names, ", "))
 	}
 	return b.String()
 }

@@ -37,10 +37,15 @@ pairs:
         vrid: 2
         addresses: [203.0.113.1/29]
     sync:
+      # Sections apply in this order, so list a section before any that
+      # names its entries: address lists before the firewall rules matching
+      # them (else a new drop rule on a blocklist fails open until the list
+      # is written), DHCP servers before their leases, scripts before the
+      # schedulers that run them.
       sections:
+        - ip/firewall/address-list
         - ip/firewall/filter
         - ip/firewall/nat
-        - ip/firewall/address-list
         - ip/dhcp-server
         - ip/dhcp-server/network
         - ip/dhcp-server/lease   # static only
