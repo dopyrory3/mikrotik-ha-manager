@@ -174,10 +174,21 @@ either router is logged into).
 | `priority_backup` | int | VRRP priority a healthy standby holds |
 | `priority_degraded` | int | Priority the up/down scripts drop a router to when its targets are unreachable |
 
-`priority_master`/`priority_backup` set the initial VRRP priority for routers
-`a`/`b` when the Runtime screen provisions a VRRP interface; `priority_degraded`
-and `netwatch_targets` parameterize the netwatch up/down scripts deployed
-alongside it (see [Runtime screen](usage.md#runtime)).
+`priority_master`/`priority_backup` are the base VRRP priority of routers
+`a`/`b`: what the Runtime screen creates a VRRP interface with.
+`priority_degraded` and `netwatch_targets` parameterize the netwatch up/down
+scripts deployed alongside it (see [Runtime screen](usage.md#runtime)):
+
+- a target going down drops that router's priority to `priority_degraded`;
+- a target coming back up restores the router's **own** base priority
+  (`priority_master` on `a`, `priority_backup` on `b`), and only once every
+  mtha netwatch entry on that router is up again.
+
+The scripts only change VRRP interfaces mtha manages (comment
+`mtha:vrrp:<name>`). Because netwatch (and, later, planned failover) moves
+priority on purpose, deploy never resets the priority of a VRRP interface
+that already exists, and verify accepts either the base or the degraded
+priority as `ok`.
 
 | Field | Type | Notes |
 | --- | --- | --- |

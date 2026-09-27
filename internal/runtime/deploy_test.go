@@ -206,6 +206,80 @@ func TestEnsureTreatsOwnScriptAsNoConflict(t *testing.T) {
 	}
 }
 
+func mutablePriorityOp() Op {
+	op := simpleOp()
+	op.Fields["priority"] = "200"
+	op.Mutable = map[string][]string{"priority": {"200", "50"}}
+	return op
+}
+
+// A degraded router's priority is healthy runtime state: deploy leaves it
+// alone (patching it back to base would preempt master onto a router whose
+// uplink is down) and verify reports it OK.
+func TestEnsureLeavesMutablePriorityAlone(t *testing.T) {
+	cases := []struct {
+		name      string
+		priority  string
+		wantState State
+	}{
+		{"degraded", "50", StateOK},
+		{"base", "200", StateOK},
+		{"neither", "150", StateMismatched},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var patched map[string]string
+			mux := http.NewServeMux()
+			mux.HandleFunc("/rest/tool/netwatch/", func(w http.ResponseWriter, r *http.Request) {
+				json.NewDecoder(r.Body).Decode(&patched)
+				io.WriteString(w, `{}`)
+			})
+			mux.HandleFunc("/rest/tool/netwatch", func(w http.ResponseWriter, r *http.Request) {
+				io.WriteString(w, `[{".id":"*1","host":"9.9.9.9","comment":"mtha:netwatch:1.1.1.1","priority":"`+tc.priority+`"}]`)
+			})
+			client := testClient(t, mux)
+
+			state, _, err := check(context.Background(), client, mutablePriorityOp())
+			if err != nil {
+				t.Fatalf("check: %v", err)
+			}
+			if state != StateMismatched {
+				t.Errorf("check state = %v, want mismatched (host differs)", state)
+			}
+
+			state, err = ensure(context.Background(), client, mutablePriorityOp())
+			if err != nil {
+				t.Fatalf("ensure: %v", err)
+			}
+			if _, ok := patched["priority"]; ok {
+				t.Errorf("patch body = %v, must never patch a mutable field on an existing entry", patched)
+			}
+			if patched["host"] != "1.1.1.1" {
+				t.Errorf("patch body = %v, want the static field still corrected", patched)
+			}
+			if state != tc.wantState {
+				t.Errorf("ensure state = %v, want %v", state, tc.wantState)
+			}
+		})
+	}
+}
+
+func TestCheckAcceptsMutableValues(t *testing.T) {
+	for priority, want := range map[string]State{"200": StateOK, "50": StateOK, "150": StateMismatched} {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/rest/tool/netwatch", func(w http.ResponseWriter, r *http.Request) {
+			io.WriteString(w, `[{".id":"*1","host":"1.1.1.1","comment":"mtha:netwatch:1.1.1.1","priority":"`+priority+`"}]`)
+		})
+		state, _, err := check(context.Background(), testClient(t, mux), mutablePriorityOp())
+		if err != nil {
+			t.Fatalf("check: %v", err)
+		}
+		if state != want {
+			t.Errorf("priority %s: state = %v, want %v", priority, state, want)
+		}
+	}
+}
+
 func TestCheckStates(t *testing.T) {
 	cases := []struct {
 		name string

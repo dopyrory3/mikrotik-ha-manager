@@ -18,7 +18,7 @@ func netwatchMarker(target string) string { return "# mtha:netwatch:" + target }
 // onMasterScript/onBackupScript log the transition and, when toggles are
 // configured for this instance, switch them (project.md §5.5: "optionally
 // enable/disable DHCP server, adjust routes") — the same find-and-set shape
-// netwatchScript uses for priority, so a name that matches nothing is a
+// the netwatch scripts use for priority, so a name that matches nothing is a
 // no-op rather than a script error. On master the routes come up before
 // DHCP starts offering leases; on backup DHCP stops first. Pass a zero
 // TogglesConfig for a log-only script.
@@ -64,11 +64,26 @@ func quote(v string) string {
 	return `"` + r.Replace(v) + `"`
 }
 
-// netwatchScript raises or lowers every VRRP instance's priority on this
-// router in one shot (project.md §5.5: "raise/lower VRRP priority
-// (priority_master <-> priority_degraded)"); the same script (parameterized
-// only by which priority to set) serves both up-script and down-script.
-func netwatchScript(target string, priority int) string {
-	return fmt.Sprintf("%s\n:foreach i in=[/interface/vrrp find] do={/interface/vrrp set $i priority=%d}",
-		netwatchMarker(target), priority)
+// Netwatch scripts only touch VRRP interfaces mtha manages (comment
+// "mtha:vrrp:<name>", see vrrpTag), never hand-made ones. project.md §5.5:
+// "raise/lower VRRP priority (priority_master <-> priority_degraded)", per
+// router — the standby is restored to priority_backup, not promoted.
+const (
+	managedVRRP     = `/interface/vrrp find where comment~"^mtha:vrrp:"`
+	netwatchDownAny = `/tool/netwatch print count-only where comment~"^mtha:netwatch:" disabled=no status=down`
+)
+
+// netwatchDownScript lowers the router's managed VRRP interfaces to the
+// degraded priority as soon as any one target goes down.
+func netwatchDownScript(target string, degraded int) string {
+	return fmt.Sprintf("%s\n:foreach i in=[%s] do={/interface/vrrp set $i priority=%d}",
+		netwatchMarker(target), managedVRRP, degraded)
+}
+
+// netwatchUpScript restores the router's base priority, but only when no
+// enabled mtha netwatch entry is still down: each target's up-script runs
+// independently, and must not undo another target's down-script.
+func netwatchUpScript(target string, base int) string {
+	return fmt.Sprintf("%s\n:if ([%s] = 0) do={:foreach i in=[%s] do={/interface/vrrp set $i priority=%d}}",
+		netwatchMarker(target), netwatchDownAny, managedVRRP, base)
 }

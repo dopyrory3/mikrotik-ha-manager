@@ -198,7 +198,7 @@ func ensure(ctx context.Context, client *routeros.Client, op Op) (State, error) 
 	conflictSet := toSet(conflicts)
 	patch := map[string]string{}
 	for k, v := range op.Fields {
-		if conflictSet[k] || stringField(current, k) == v {
+		if _, mutable := op.Mutable[k]; mutable || conflictSet[k] || stringField(current, k) == v {
 			continue
 		}
 		patch[k] = v
@@ -212,6 +212,9 @@ func ensure(ctx context.Context, client *routeros.Client, op Op) (State, error) 
 
 	if len(conflicts) > 0 {
 		return StateConflict, nil
+	}
+	if !mutableMatch(op, current) {
+		return StateMismatched, nil
 	}
 	return StateOK, nil
 }
@@ -237,11 +240,14 @@ func remove(ctx context.Context, client *routeros.Client, op Op) (State, error) 
 // guarded field whose current value is non-empty, isn't already op's own
 // value, and doesn't start with the required marker is excluded from the
 // comparison (and, in ensure, from patching) and reported as StateConflict
-// instead of silently overwritten.
+// instead of silently overwritten. A Mutable field is compared against its
+// accepted values instead of the single Fields value.
 func classify(op Op, current model.Entry) (State, []string) {
 	fields := make(map[string]string, len(op.Fields))
 	for k, v := range op.Fields {
-		fields[k] = v
+		if _, mutable := op.Mutable[k]; !mutable {
+			fields[k] = v
+		}
 	}
 
 	var conflicts []string
@@ -259,10 +265,28 @@ func classify(op Op, current model.Entry) (State, []string) {
 	if len(conflicts) > 0 {
 		return StateConflict, conflicts
 	}
-	if !fieldsMatch(fields, current) {
+	if !fieldsMatch(fields, current) || !mutableMatch(op, current) {
 		return StateMismatched, nil
 	}
 	return StateOK, nil
+}
+
+// mutableMatch reports whether every Mutable field of op holds one of its
+// accepted values on current.
+func mutableMatch(op Op, current model.Entry) bool {
+	for field, accepted := range op.Mutable {
+		actual := stringField(current, field)
+		ok := false
+		for _, v := range accepted {
+			if actual == v {
+				ok = true
+			}
+		}
+		if !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func stringField(e model.Entry, key string) string {

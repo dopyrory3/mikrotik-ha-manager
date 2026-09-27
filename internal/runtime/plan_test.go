@@ -228,3 +228,72 @@ func TestQuoteEscapesScriptMetacharacters(t *testing.T) {
 		t.Errorf("quote = %s, want %s", got, want)
 	}
 }
+
+// Each router's netwatch scripts drop it to priority_degraded and restore
+// its own base priority — B to priority_backup, never promoting it to
+// priority_master — and only ever touch mtha-tagged VRRP interfaces.
+func TestBuildPlanNetwatchScriptsArePerRouter(t *testing.T) {
+	rt := testRuntimeConfig()
+	rt.NetwatchTargets = []string{"1.1.1.1", "8.8.8.8"}
+	pair := &config.Pair{VRRP: []config.VRRPInstance{fullInstance()}, Runtime: rt}
+
+	plans, err := BuildPlan(pair)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+
+	const (
+		managed = `[/interface/vrrp find where comment~"^mtha:vrrp:"]`
+		allUp   = `:if ([/tool/netwatch print count-only where comment~"^mtha:netwatch:" disabled=no status=down] = 0) do=`
+	)
+	wantUp := map[string]string{"a": "priority=200", "b": "priority=100"}
+	for _, router := range routers {
+		n := 0
+		for _, op := range plans[router].Ops {
+			if op.Section != "tool/netwatch" {
+				continue
+			}
+			n++
+			up, down := op.Fields["up-script"], op.Fields["down-script"]
+			target := op.Fields["host"]
+
+			if !strings.HasPrefix(up, netwatchMarker(target)+"\n") || !strings.HasPrefix(down, netwatchMarker(target)+"\n") {
+				t.Errorf("router %s %s: scripts must start with the marker: %q / %q", router, target, up, down)
+			}
+			if !strings.Contains(up, wantUp[router]+"}") || strings.Count(up, "priority=") != 1 {
+				t.Errorf("router %s %s up-script = %q, want it to restore %s only", router, target, up, wantUp[router])
+			}
+			if !strings.Contains(up, allUp) {
+				t.Errorf("router %s %s up-script = %q, want it gated on every mtha netwatch being up", router, target, up)
+			}
+			if !strings.Contains(down, "priority=50}") || strings.Count(down, "priority=") != 1 {
+				t.Errorf("router %s %s down-script = %q, want priority_degraded (50)", router, target, down)
+			}
+			for _, script := range []string{up, down} {
+				if !strings.Contains(script, managed) || strings.Contains(script, "[/interface/vrrp find]") {
+					t.Errorf("router %s %s script = %q, want it limited to mtha-managed VRRP interfaces", router, target, script)
+				}
+			}
+		}
+		if n != 2 {
+			t.Errorf("router %s: %d netwatch ops, want 2", router, n)
+		}
+	}
+}
+
+// Priority is created at the router's base value but accepted at either
+// base or degraded afterwards, since netwatch moves it on purpose.
+func TestBuildPlanVRRPPriorityIsMutable(t *testing.T) {
+	pair := &config.Pair{VRRP: []config.VRRPInstance{fullInstance()}, Runtime: testRuntimeConfig()}
+	plans, err := BuildPlan(pair)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	want := map[string][]string{"a": {"200", "50"}, "b": {"100", "50"}}
+	for _, router := range routers {
+		got := vrrpOpNamed(t, plans[router].Ops, "vrrp-lan").Mutable["priority"]
+		if strings.Join(got, ",") != strings.Join(want[router], ",") {
+			t.Errorf("router %s accepted priorities = %v, want %v", router, got, want[router])
+		}
+	}
+}
