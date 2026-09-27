@@ -1,9 +1,9 @@
 # Two RouterOS CHR instances forming a real VRRP pair, for testing mtha
 # against actual RouterOS rather than hand-written fixtures.
 #
-#   docker compose up -d --build     # first run builds testlab/Dockerfile
+#   docker compose -f testlab/docker-compose.yml up -d --build
 #   ./testlab/provision.sh           # address + VRRP on both routers
-#   ./mtha -config ... -pair lab     # see docs/testing.md
+#   ./mtha -config ... -pair lab     # see the README's testing section
 #
 # The stock image cannot be used as-is for a two-router lab. testlab/ fixes
 # two things it gets wrong when a container is attached to two networks:
@@ -17,9 +17,15 @@
 #      addressed to the guest. We remove that assignment.
 #
 # Both fall out of the MACs fixed below, so they are stable per service.
+#
+# The project name is pinned so the lab is the same project -- and the same
+# networks -- whether it is brought up from the repo root or from this
+# directory.
+name: mtha-lab
+
 services:
   router1:
-    build: ./testlab
+    build: .
     image: mtha-routeros-lab:latest
     container_name: mikrotik-router1
     restart: unless-stopped
@@ -46,7 +52,7 @@ services:
       - router1_data:/data   # persists disk2.raw + this router's unique MAC
 
   router2:
-    build: ./testlab
+    build: .
     image: mtha-routeros-lab:latest
     container_name: mikrotik-router2
     restart: unless-stopped

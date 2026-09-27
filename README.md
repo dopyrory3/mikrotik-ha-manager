@@ -123,14 +123,17 @@ are plain `go build`.
 
 ## Testing against real RouterOS
 
-`docker-compose.yml` runs two RouterOS 7 CHR instances as a real VRRP pair, so
-the tool can be exercised against a device rather than the hand-written
-fixtures in `internal/routeros`:
+`testlab/docker-compose.yml` runs two RouterOS 7 CHR instances as a real VRRP
+pair, so the tool can be exercised against a device rather than the
+hand-written fixtures in `internal/routeros`:
 
 ```sh
-docker compose up -d --build     # first run builds testlab/
+docker compose -f testlab/docker-compose.yml up -d --build
 ./testlab/provision.sh           # address ether2 and build the VRRP pair
 ```
+
+Stop it with `docker compose -f testlab/docker-compose.yml down`, adding `-v`
+to drop the guest disks as well.
 
 Then point a pair file at `https://localhost:443` and `https://localhost:8443`
 (user `admin`, password `London12`) and run mtha. The two routers are bridged
