@@ -6,6 +6,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"runtime/debug"
 
@@ -29,69 +30,95 @@ func main() {
 }
 
 func run() error {
-	var (
-		configPath string
-		pairName   string
-		write      bool
-		initConfig bool
-		showVer    bool
-	)
-
 	defaultPath, err := config.DefaultPath()
 	if err != nil {
 		return err
 	}
 
-	flag.StringVar(&configPath, "config", defaultPath, "path to pair config file")
-	flag.StringVar(&pairName, "pair", "", "pair name (required if the config defines more than one)")
-	flag.BoolVar(&write, "write", false, "allow write operations (sync, deploy, failover); default is read-only")
-	flag.BoolVar(&initConfig, "init", false, "write a commented sample pair file to -config and exit")
-	flag.BoolVar(&showVer, "version", false, "print the mtha version and exit")
-	flag.Parse()
-
-	if showVer {
-		fmt.Println("mtha", buildVersion())
-		return nil
-	}
-
-	if initConfig {
-		if err := config.WriteSample(configPath); err != nil {
-			return err
-		}
-		fmt.Printf("wrote sample config to %s\n", configPath)
-		fmt.Println("set MTHA_<PAIR>_<ROUTER>_PASSWORD for each router before running (e.g. MTHA_CORE_A_PASSWORD)")
-		return nil
-	}
-
-	file, err := config.Load(configPath)
+	opts, err := parseFlags(flag.CommandLine, os.Args[1:], defaultPath)
 	if err != nil {
 		return err
 	}
-	if len(file.Pairs) == 0 {
-		return fmt.Errorf("no pairs defined in %s", configPath)
+
+	model, err := setup(opts, os.Stdout)
+	if err != nil || model == nil {
+		return err
 	}
 
+	program := tea.NewProgram(model)
+	_, err = program.Run()
+	return err
+}
+
+// options are mtha's command-line flags.
+type options struct {
+	configPath string
+	pairName   string
+	write      bool
+	initConfig bool
+	showVer    bool
+}
+
+// parseFlags registers mtha's flags on fs and parses args into options. run
+// passes the global flag.CommandLine and os.Args[1:], which is exactly what
+// flag.Parse does; tests pass their own FlagSet.
+func parseFlags(fs *flag.FlagSet, args []string, defaultPath string) (options, error) {
+	var opts options
+	fs.StringVar(&opts.configPath, "config", defaultPath, "path to pair config file")
+	fs.StringVar(&opts.pairName, "pair", "", "pair name (required if the config defines more than one)")
+	fs.BoolVar(&opts.write, "write", false, "allow write operations (sync, deploy, failover); default is read-only")
+	fs.BoolVar(&opts.initConfig, "init", false, "write a commented sample pair file to -config and exit")
+	fs.BoolVar(&opts.showVer, "version", false, "print the mtha version and exit")
+	err := fs.Parse(args)
+	return opts, err
+}
+
+// setup does everything run does short of starting the TUI. -version and
+// -init print to out and return a nil model (nothing to run); otherwise it
+// loads the pair file, selects the pair, builds its pollers and returns the
+// root model.
+func setup(opts options, out io.Writer) (tea.Model, error) {
+	if opts.showVer {
+		fmt.Fprintln(out, "mtha", buildVersion())
+		return nil, nil
+	}
+
+	if opts.initConfig {
+		if err := config.WriteSample(opts.configPath); err != nil {
+			return nil, err
+		}
+		fmt.Fprintf(out, "wrote sample config to %s\n", opts.configPath)
+		fmt.Fprintln(out, "set MTHA_<PAIR>_<ROUTER>_PASSWORD for each router before running (e.g. MTHA_CORE_A_PASSWORD)")
+		return nil, nil
+	}
+
+	file, err := config.Load(opts.configPath)
+	if err != nil {
+		return nil, err
+	}
+	if len(file.Pairs) == 0 {
+		return nil, fmt.Errorf("no pairs defined in %s", opts.configPath)
+	}
+
+	pairName := opts.pairName
 	if pairName == "" {
 		if len(file.Pairs) > 1 {
-			return fmt.Errorf("multiple pairs defined in %s; pass -pair to choose one", configPath)
+			return nil, fmt.Errorf("multiple pairs defined in %s; pass -pair to choose one", opts.configPath)
 		}
 		pairName = file.Pairs[0].Name
 	}
 
 	pair, err := file.Pair(pairName)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	pollers, err := buildPollers(pair)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	model := ui.New(pair, write, pollers)
-	program := tea.NewProgram(model)
-	_, err = program.Run()
-	return err
+	return ui.New(pair, opts.write, pollers), nil
 }
 
 // buildVersion is the stamped version, falling back to the module version
