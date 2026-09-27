@@ -3,9 +3,11 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"mtha/internal/model"
+	"mtha/internal/plan"
 	"mtha/internal/routeros"
 )
 
@@ -74,18 +76,13 @@ func (s Status) FirstIssue() string {
 	return ""
 }
 
-// Result is the outcome of Deploy or Remove across both routers.
-type Result struct {
-	Status Status
-	Err    error // first error encountered; other ops still ran (partial results in Status)
-}
-
 func clientsByRouter(clientA, clientB *routeros.Client) map[string]*routeros.Client {
 	return map[string]*routeros.Client{"a": clientA, "b": clientB}
 }
 
 // Verify reads both routers and reports how their current state compares to
-// plans, without writing anything.
+// plans, without writing anything. It is also the post-write verification
+// of a Runtime deploy or remove.
 func Verify(ctx context.Context, clientA, clientB *routeros.Client, plans map[string]Plan) (Status, error) {
 	clients := clientsByRouter(clientA, clientB)
 	status := Status{}
@@ -107,62 +104,86 @@ func Verify(ctx context.Context, clientA, clientB *routeros.Client, plans map[st
 	return status, firstErr
 }
 
-// Deploy makes every Op in plans true on both routers: creates what's
-// missing, patches mismatched fields, leaves conflicting guarded fields
-// alone. One Op failing doesn't stop the rest (mirrors ui.fetchDrift's
-// partial-result philosophy) — check Result.Status for what actually landed.
-func Deploy(ctx context.Context, clientA, clientB *routeros.Client, plans map[string]Plan) Result {
-	clients := clientsByRouter(clientA, clientB)
-	status := Status{}
-	var firstErr error
+// Action is which of the Runtime screen's two write actions to plan.
+type Action int
 
-	for _, router := range routers {
-		client := clients[router]
-		items := make([]ItemStatus, 0, len(plans[router].Ops))
-		for _, op := range plans[router].Ops {
-			state, err := ensure(ctx, client, op)
-			note := ""
-			if err != nil {
-				note = err.Error()
-				if firstErr == nil {
-					firstErr = fmt.Errorf("deploy %s on router %s: %w", op.Label, router, err)
-				}
-			}
-			items = append(items, ItemStatus{Label: op.Label, State: state, Note: note})
-		}
-		status[router] = items
+const (
+	ActionDeploy Action = iota
+	ActionRemove
+)
+
+func (a Action) String() string {
+	if a == ActionRemove {
+		return "remove"
 	}
-
-	return Result{Status: status, Err: firstErr}
+	return "deploy"
 }
 
-// Remove deletes every mtha-tagged entry plans describes, on both routers —
-// including VRRP interfaces and their addresses. The caller (the Runtime
-// screen) is responsible for confirming this with the operator first,
-// especially for a router currently holding VRRP master.
-func Remove(ctx context.Context, clientA, clientB *routeros.Client, plans map[string]Plan) Result {
+// Writes reads both routers fresh and plans action as REST operations, so
+// Runtime writes go through the same dry run → confirm → recheck → execute
+// → verify pipeline as config sync (project.md §7.3: "every write goes
+// through plan and is shown before execution"). Each router the plan writes
+// to starts with a pre-apply backup. Deploy creates what's missing and
+// patches mismatched fields, in plan order (a VRRP interface before its
+// addresses); remove deletes what's there, in reverse. Anything left alone
+// on purpose — an untagged object with mtha's name, a hand-written
+// on-master/on-backup script, a priority outside the accepted set — is
+// listed in Plan.Skipped with the reason.
+func Writes(ctx context.Context, clientA, clientB *routeros.Client, plans map[string]Plan, action Action, backupName string) (plan.Plan, error) {
 	clients := clientsByRouter(clientA, clientB)
-	status := Status{}
-	var firstErr error
-
+	reads := map[string]map[string][]model.Entry{}
 	for _, router := range routers {
-		client := clients[router]
-		items := make([]ItemStatus, 0, len(plans[router].Ops))
+		reads[router] = map[string][]model.Entry{}
 		for _, op := range plans[router].Ops {
-			state, err := remove(ctx, client, op)
-			note := ""
-			if err != nil {
-				note = err.Error()
-				if firstErr == nil {
-					firstErr = fmt.Errorf("remove %s on router %s: %w", op.Label, router, err)
-				}
+			if _, ok := reads[router][op.Section]; ok {
+				continue
 			}
-			items = append(items, ItemStatus{Label: op.Label, State: state, Note: note})
+			entries, err := clients[router].GetSection(ctx, op.Section)
+			if err != nil {
+				return plan.Plan{}, fmt.Errorf("read %s on router %s: %w", op.Section, router, err)
+			}
+			reads[router][op.Section] = entries
 		}
-		status[router] = items
 	}
+	return buildWrites(plans, reads, action, backupName), nil
+}
 
-	return Result{Status: status, Err: firstErr}
+// buildWrites is Writes without the I/O: reads holds each router's current
+// entries per section.
+func buildWrites(plans map[string]Plan, reads map[string]map[string][]model.Entry, action Action, backupName string) plan.Plan {
+	var p plan.Plan
+	for _, router := range routers {
+		ops := plans[router].Ops
+		if action == ActionRemove {
+			ops = make([]Op, len(plans[router].Ops))
+			for i, op := range plans[router].Ops {
+				ops[len(ops)-1-i] = op
+			}
+		}
+
+		var writes []plan.Op
+		for _, op := range ops {
+			entries := reads[router][op.Section]
+			var w []plan.Op
+			var skips []string
+			if action == ActionRemove {
+				w, skips = removeWrites(router, op, entries)
+			} else {
+				w, skips = deployWrites(router, op, entries)
+			}
+			writes = append(writes, w...)
+			for _, reason := range skips {
+				p.Skipped = append(p.Skipped, plan.Skip{
+					Section: op.Section, Ref: plan.HunkRef{Identity: op.Label}, Router: router, Reason: reason,
+				})
+			}
+		}
+		if len(writes) > 0 {
+			p.Ops = append(p.Ops, plan.BackupOp(router, backupName))
+			p.Ops = append(p.Ops, writes...)
+		}
+	}
+	return p
 }
 
 // check is Verify's per-Op, per-router read: no writes.
@@ -182,28 +203,34 @@ func check(ctx context.Context, client *routeros.Client, op Op) (state State, no
 	return state, "", nil
 }
 
-// ensure is Deploy's per-Op, per-router step: create if missing, patch any
-// mismatched non-conflicting fields if present.
-func ensure(ctx context.Context, client *routeros.Client, op Op) (State, error) {
-	entries, err := client.GetSection(ctx, op.Section)
-	if err != nil {
-		return StateMissing, err
-	}
-
+// deployWrites is the create or patch that makes op true on router, given
+// the router's current entries of op.Section, plus why anything is left
+// alone: guarded and Mutable fields are never overwritten on an existing
+// entry, and an untagged same-named entry is never touched.
+func deployWrites(router string, op Op, entries []model.Entry) ([]plan.Op, []string) {
 	current, found, foreign := locate(entries, op)
 	if foreign {
-		return StateConflict, nil
+		return nil, []string{foreignNote + "; left untouched"}
 	}
 	if !found {
-		if err := client.Post(ctx, "/"+op.Section, op.Fields, nil); err != nil {
-			return StateMissing, err
-		}
-		return StateOK, nil
+		return []plan.Op{{
+			Router: router, Method: plan.MethodCreate, Path: "/" + op.Section, Body: copyFields(op.Fields),
+			Section: op.Section, Identity: op.Label, Note: "create " + op.Label,
+		}}, nil
 	}
 
-	state, conflicts := classify(op, current)
-	if state == StateOK {
-		return StateOK, nil
+	_, conflicts := classify(op, current)
+	sort.Strings(conflicts)
+	var skips []string
+	for _, field := range conflicts {
+		skips = append(skips, field+" holds a script mtha didn't write; left untouched")
+	}
+	for _, field := range sortedKeys(op.Mutable) {
+		accepted := op.Mutable[field]
+		if actual := stringField(current, field); !contains(accepted, actual) {
+			skips = append(skips, fmt.Sprintf("%s is %s, not %s; deploy doesn't change it on an existing entry",
+				field, actual, strings.Join(accepted, " or ")))
+		}
 	}
 
 	conflictSet := toSet(conflicts)
@@ -214,40 +241,29 @@ func ensure(ctx context.Context, client *routeros.Client, op Op) (State, error) 
 		}
 		patch[k] = v
 	}
-	if len(patch) > 0 {
-		id := stringField(current, ".id")
-		if err := client.Patch(ctx, "/"+op.Section+"/"+id, patch, nil); err != nil {
-			return state, err
-		}
+	if len(patch) == 0 {
+		return nil, skips
 	}
-
-	if len(conflicts) > 0 {
-		return StateConflict, nil
-	}
-	if !mutableMatch(op, current) {
-		return StateMismatched, nil
-	}
-	return StateOK, nil
+	return []plan.Op{{
+		Router: router, Method: plan.MethodUpdate, Path: "/" + op.Section + "/" + stringField(current, ".id"), Body: patch,
+		Section: op.Section, Identity: op.Label, Note: "update " + op.Label,
+	}}, skips
 }
 
-// remove is Remove's per-Op, per-router step.
-func remove(ctx context.Context, client *routeros.Client, op Op) (State, error) {
-	entries, err := client.GetSection(ctx, op.Section)
-	if err != nil {
-		return StateMissing, err
-	}
+// removeWrites is the delete of op's entry on router, if it is there and
+// is mtha's.
+func removeWrites(router string, op Op, entries []model.Entry) ([]plan.Op, []string) {
 	current, found, foreign := locate(entries, op)
-	if foreign {
-		return StateConflict, nil
+	switch {
+	case foreign:
+		return nil, []string{foreignNote + "; not removed"}
+	case !found:
+		return nil, nil
 	}
-	if !found {
-		return StateMissing, nil
-	}
-	id := stringField(current, ".id")
-	if err := client.Delete(ctx, "/"+op.Section+"/"+id); err != nil {
-		return StateMismatched, err
-	}
-	return StateMissing, nil
+	return []plan.Op{{
+		Router: router, Method: plan.MethodDelete, Path: "/" + op.Section + "/" + stringField(current, ".id"),
+		Section: op.Section, Identity: op.Label, Note: "remove " + op.Label,
+	}}, nil
 }
 
 // classify compares current against op.Fields, honoring op.Guarded: a
@@ -289,18 +305,37 @@ func classify(op Op, current model.Entry) (State, []string) {
 // accepted values on current.
 func mutableMatch(op Op, current model.Entry) bool {
 	for field, accepted := range op.Mutable {
-		actual := stringField(current, field)
-		ok := false
-		for _, v := range accepted {
-			if actual == v {
-				ok = true
-			}
-		}
-		if !ok {
+		if !contains(accepted, stringField(current, field)) {
 			return false
 		}
 	}
 	return true
+}
+
+func contains(values []string, v string) bool {
+	for _, x := range values {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+func sortedKeys(m map[string][]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func copyFields(fields map[string]string) map[string]string {
+	out := make(map[string]string, len(fields))
+	for k, v := range fields {
+		out[k] = v
+	}
+	return out
 }
 
 func stringField(e model.Entry, key string) string {

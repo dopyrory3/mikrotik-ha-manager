@@ -34,22 +34,6 @@ const (
 	screenEvents
 )
 
-// runtimeActionKind identifies which of the Runtime screen's two write
-// actions a pending confirmation belongs to.
-type runtimeActionKind int
-
-const (
-	runtimeActionDeploy runtimeActionKind = iota
-	runtimeActionRemove
-)
-
-// pendingRuntimeAction holds a computed plan awaiting a second keypress to
-// confirm before it runs (project.md §7.3: every write is shown before
-// execution). nil on Model means no confirmation is pending.
-type pendingRuntimeAction struct {
-	kind runtimeActionKind
-}
-
 // Model is the root Bubble Tea model.
 type Model struct {
 	pair      *config.Pair
@@ -79,9 +63,14 @@ type Model struct {
 	runtimeStatus   runtime.Status
 	runtimeFetching bool
 	runtimeErr      error
-	runtimePending  *pendingRuntimeAction
+	runtimeNotice   string // why d/x was refused
 
 	apply applyState
+	// writing is set while a confirmed plan (sync or Runtime) is running,
+	// until its verification lands. No other write may start meanwhile
+	// (writeBusy), so nothing lands between a plan's recheck, backup and
+	// writes that the operator didn't confirm.
+	writing bool
 
 	// journal records the tool's own actions for the Events timeline
 	// (project.md §5.7). It is a pointer so every copy of Model shares it;
@@ -177,13 +166,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.runtimeFetching = false
 		m.runtimeErr = msg.err
 		m.runtimeStatus = msg.status
-		return m, nil
-
-	case runtimeActionMsg:
-		m.journal.Record(runtimeActionEvent(msg))
-		m.runtimeFetching = false
-		m.runtimeErr = msg.result.Err
-		m.runtimeStatus = msg.result.Status
 		return m, nil
 
 	case applyPlanMsg, applyStepMsg, applyVerifyMsg:

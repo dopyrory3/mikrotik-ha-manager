@@ -94,21 +94,12 @@ func (m Model) applyEventsResult(msg eventsResultMsg) Model {
 	return m
 }
 
-// runtimeActionEvent describes a finished Runtime deploy/remove for the
-// Events timeline.
-func runtimeActionEvent(msg runtimeActionMsg) events.Action {
-	summary := "deploy runtime logic"
-	if msg.kind == runtimeActionRemove {
-		summary = "remove runtime logic"
-	}
-	return events.Action{Kind: events.ActionRuntime, Summary: summary, Err: msg.result.Err}
-}
-
-// applyActionEvents describes a finished apply for the Events timeline
-// (project.md §5.7): one action per target router, naming the sections
-// written and how many of that router's ops ran. A router whose ops did not
-// all run — the one that failed, or one the run stopped before reaching —
-// carries the run's error.
+// applyActionEvents describes a finished run for the Events timeline
+// (project.md §5.7): one action per target router, saying what ran — the
+// sections a sync wrote, or a Runtime deploy/remove, labelled as a runtime
+// action — and how many of that router's ops ran. A router whose ops did
+// not all run — the one that failed, or one the run stopped before
+// reaching — carries the run's error.
 func applyActionEvents(a applyState) []events.Action {
 	var out []events.Action
 	for _, target := range a.plan.Targets() {
@@ -132,6 +123,10 @@ func applyActionEvents(a applyState) []events.Action {
 			Kind:    events.ActionSync,
 			Target:  target,
 			Summary: fmt.Sprintf("apply %s: %d/%d ops", strings.Join(sections, ","), done, total),
+		}
+		if a.kind != applySync {
+			action.Kind = events.ActionRuntime
+			action.Summary = fmt.Sprintf("%s runtime logic: %d/%d ops", a.kind.runtimeAction(), done, total)
 		}
 		if done < total {
 			action.Err = a.err

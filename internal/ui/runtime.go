@@ -17,12 +17,6 @@ type runtimeVerifyMsg struct {
 	err    error
 }
 
-// runtimeActionMsg carries the outcome of a confirmed deploy or remove.
-type runtimeActionMsg struct {
-	kind   runtimeActionKind
-	result runtime.Result
-}
-
 func (m Model) enterRuntimeScreen() (tea.Model, tea.Cmd) {
 	m.screen = screenRuntime
 	if m.runtimePlans == nil && m.runtimePlanErr == nil {
@@ -53,25 +47,6 @@ func (m Model) startRuntimeVerify() (tea.Model, tea.Cmd) {
 	}
 }
 
-func (m Model) startRuntimeAction(kind runtimeActionKind) (tea.Model, tea.Cmd) {
-	m.runtimeFetching = true
-	m.runtimePending = nil
-
-	ctx := m.runtimeCtx()
-	clientA, clientB := m.pollers["a"].Client, m.pollers["b"].Client
-	plans := m.runtimePlans
-
-	return m, func() tea.Msg {
-		var result runtime.Result
-		if kind == runtimeActionDeploy {
-			result = runtime.Deploy(ctx, clientA, clientB, plans)
-		} else {
-			result = runtime.Remove(ctx, clientA, clientB, plans)
-		}
-		return runtimeActionMsg{kind: kind, result: result}
-	}
-}
-
 // runtimeCtx mirrors startDriftFetch's fallback: Init's cancelHolderMsg cmd
 // may not have resolved yet on the very first keypress.
 func (m Model) runtimeCtx() context.Context {
@@ -81,34 +56,31 @@ func (m Model) runtimeCtx() context.Context {
 	return context.Background()
 }
 
+// handleRuntimeKey plans a deploy (d) or remove (x) and hands it to the
+// Apply screen, which shows the dry run and runs it only after the same
+// confirmations as a sync (y, plus Y for a possible master). Nothing is
+// written from this screen.
 func (m Model) handleRuntimeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.runtimePending != nil {
-		switch msg.String() {
-		case "y":
-			if !m.writeMode {
-				return m, nil
-			}
-			return m.startRuntimeAction(m.runtimePending.kind)
-		case "n", "esc":
-			m.runtimePending = nil
-			return m, nil
-		}
-		return m, nil
-	}
-
 	if m.runtimePlanErr != nil || m.runtimeFetching {
 		return m, nil
 	}
 
 	switch msg.String() {
 	case "r":
+		m.runtimeNotice = ""
 		return m.startRuntimeVerify()
-	case "d":
-		m.runtimePending = &pendingRuntimeAction{kind: runtimeActionDeploy}
-		return m, nil
-	case "x":
-		m.runtimePending = &pendingRuntimeAction{kind: runtimeActionRemove}
-		return m, nil
+	case "d", "x":
+		if reason := m.writeBusy(); reason != "" {
+			m.runtimeNotice = reason
+			return m, nil
+		}
+		m.runtimeNotice = ""
+		m.apply = applyState{kind: applyRuntimeDeploy}
+		if msg.String() == "x" {
+			m.apply.kind = applyRuntimeRemove
+		}
+		m.screen = screenApply
+		return m.startApplyPlan(false)
 	}
 	return m, nil
 }
@@ -118,11 +90,14 @@ func renderRuntime(m Model) string {
 	b.WriteString(styleTitle.Render(fmt.Sprintf("mtha — %s — runtime", m.pair.Name)))
 	b.WriteString("\n\n")
 
+	if m.runtimeNotice != "" {
+		b.WriteString(styleDegraded.Render(m.runtimeNotice))
+		b.WriteString("\n\n")
+	}
+
 	switch {
 	case m.runtimePlanErr != nil:
 		b.WriteString(styleDown.Render("config error: " + m.runtimePlanErr.Error()))
-	case m.runtimePending != nil:
-		b.WriteString(renderRuntimeConfirm(m))
 	case m.runtimeFetching:
 		b.WriteString(styleMuted.Render("working..."))
 	case m.runtimeErr != nil:
@@ -136,10 +111,7 @@ func renderRuntime(m Model) string {
 	}
 
 	b.WriteString("\n\n")
-	hint := "r: refresh, d: deploy, x: remove, tab: apply, 6: events, ?: help, q: quit"
-	if m.runtimePending != nil {
-		hint = "y: confirm, n/esc: cancel"
-	}
+	hint := "r: refresh, d: plan deploy, x: plan remove, tab: apply, 6: events, ?: help, q: quit"
 	b.WriteString(styleStatusBar.Render(fmt.Sprintf(" %s | runtime | %s ", m.pair.Name, hint)))
 	return b.String()
 }
@@ -175,36 +147,4 @@ func statusStyle(s runtime.State) lipgloss.Style {
 	default:
 		return styleDegraded
 	}
-}
-
-func renderRuntimeConfirm(m Model) string {
-	var b strings.Builder
-	verb := "Deploy"
-	if m.runtimePending.kind == runtimeActionRemove {
-		verb = "Remove"
-	}
-	fmt.Fprintf(&b, "%s the following:\n\n", verb)
-
-	for _, router := range []string{"a", "b"} {
-		fmt.Fprintf(&b, "%s\n", styleTitle.Render("Router "+strings.ToUpper(router)))
-		master := possibleMaster(m, router)
-		for _, op := range m.runtimePlans[router].Ops {
-			marker := "  "
-			if m.runtimePending.kind == runtimeActionRemove && master && op.Section == "interface/vrrp" {
-				marker = styleDown.Render("‼ ")
-			}
-			fmt.Fprintf(&b, "%s%s\n", marker, op.Label)
-		}
-	}
-
-	b.WriteString("\n")
-	if m.runtimePending.kind == runtimeActionRemove {
-		b.WriteString(styleMuted.Render("‼ marks a VRRP interface on a router that may hold master (or whose VRRP state is unknown).\n"))
-	}
-	if !m.writeMode {
-		b.WriteString(styleDown.Render("read-only — restart with -write to actually run this"))
-	} else {
-		b.WriteString("press y to confirm, n/esc to cancel")
-	}
-	return b.String()
 }

@@ -13,6 +13,7 @@ import (
 
 	"mtha/internal/config"
 	"mtha/internal/events"
+	"mtha/internal/plan"
 	"mtha/internal/poll"
 	"mtha/internal/routeros"
 	"mtha/internal/runtime"
@@ -77,9 +78,21 @@ func TestApplyEventsResultKeepsPreviousLogOnError(t *testing.T) {
 	}
 }
 
+// Runtime deploy/remove run through the Apply pipeline but stay labelled as
+// runtime actions on the timeline, with a failed router's error.
 func TestRuntimeActionIsRecordedOnTimeline(t *testing.T) {
 	m := eventsTestModel()
-	updated, _ := m.Update(runtimeActionMsg{kind: runtimeActionRemove, result: runtime.Result{Err: errors.New("boom")}})
+	m.apply = applyState{
+		kind:  applyRuntimeRemove,
+		stage: applyVerifying,
+		plan: plan.Plan{Ops: []plan.Op{
+			plan.BackupOp("a", "bk"),
+			{Router: "a", Method: plan.MethodDelete, Path: "/tool/netwatch/*1", Section: "tool/netwatch"},
+		}},
+		status: []opStatus{opDone, opFailed},
+		err:    errors.New("boom"),
+	}
+	updated, _ := m.Update(applyVerifyMsg{runtimeStatus: runtime.Status{}})
 	m = updated.(Model)
 
 	tl := m.timeline()
@@ -90,7 +103,7 @@ func TestRuntimeActionIsRecordedOnTimeline(t *testing.T) {
 	if e.Source != events.SourceTool || e.Kind != string(events.ActionRuntime) || !e.Failed {
 		t.Errorf("event = %+v", e)
 	}
-	if e.Message != "remove runtime logic: boom" {
+	if e.Message != "→ A: remove runtime logic: 1/2 ops: boom" {
 		t.Errorf("message = %q", e.Message)
 	}
 }

@@ -39,10 +39,8 @@ var screenBindings = map[screenID][]keyBinding{
 	},
 	screenRuntime: {
 		{"r", "Re-verify runtime status"},
-		{"d", "Show a deploy confirmation"},
-		{"x", "Show a remove confirmation"},
-		{"y", "Confirm pending deploy/remove (needs -write)"},
-		{"n, esc", "Cancel the pending confirmation"},
+		{"d", "Plan a deploy; dry run and confirm on Apply"},
+		{"x", "Plan a remove; dry run and confirm on Apply"},
 	},
 	screenApply: {
 		{"r", "Re-read both routers and rebuild the plan"},
@@ -68,7 +66,7 @@ var screenNames = map[screenID]string{
 
 // handleHelpKey runs while the overlay is open: only closing it or quitting
 // does anything, so a stray keypress can't act on the screen underneath
-// (e.g. "y" confirming a pending runtime action).
+// (e.g. "y" confirming a pending write).
 func (m Model) handleHelpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "?", "esc":

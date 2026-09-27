@@ -14,6 +14,7 @@ import (
 	"mtha/internal/plan"
 	"mtha/internal/poll"
 	"mtha/internal/routeros"
+	"mtha/internal/runtime"
 )
 
 // The Apply screen (project.md §7.1 screen 4, milestone 3) turns the hunks
@@ -21,6 +22,11 @@ import (
 // only with -write and explicit confirmation — runs it op by op, then
 // re-runs drift detection on the touched sections and reports what still
 // differs (§5.4).
+//
+// It is also where the Runtime screen's deploy and remove run (applyKind):
+// runtime.Writes plans them from fresh reads, they go through the same
+// steps below, and runtime.Verify re-checks them afterwards. Every router
+// write mtha makes therefore goes through a plan shown here first (§7.3).
 //
 // Safety (§7.3), in the order an operator meets it:
 //
@@ -52,6 +58,35 @@ const (
 	applyDone                            // finished (fully or after a failure); results shown
 )
 
+// applyKind is what the Apply screen's current plan is for.
+type applyKind int
+
+const (
+	applySync          applyKind = iota // config sync from the Drift selection
+	applyRuntimeDeploy                  // the Runtime screen's d
+	applyRuntimeRemove                  // the Runtime screen's x
+)
+
+// title names the plan in the screen title and status bar.
+func (k applyKind) title() string {
+	switch k {
+	case applyRuntimeDeploy:
+		return "runtime deploy"
+	case applyRuntimeRemove:
+		return "runtime remove"
+	default:
+		return "apply"
+	}
+}
+
+// runtimeAction maps a Runtime kind to the runtime package's action.
+func (k applyKind) runtimeAction() runtime.Action {
+	if k == applyRuntimeRemove {
+		return runtime.ActionRemove
+	}
+	return runtime.ActionDeploy
+}
+
 // opStatus is the outcome of one op in the current run.
 type opStatus int
 
@@ -64,6 +99,7 @@ const (
 
 // applyState is the Apply screen's state, held as a single field on Model.
 type applyState struct {
+	kind  applyKind
 	stage applyStage
 	plan  plan.Plan
 	err   error // planning or execution error
@@ -80,8 +116,9 @@ type applyState struct {
 	status []opStatus // per op in plan.Ops, during and after a run
 	next   int        // index of the next op to execute
 
-	residual  map[string]diff.SectionDiff // post-apply drift of the touched sections
-	verifyErr error
+	residual      map[string]diff.SectionDiff // post-apply drift of the touched sections (sync)
+	runtimeStatus runtime.Status              // post-run runtime verification (Runtime kinds)
+	verifyErr     error
 
 	scroll int // first visible line of the plan listing
 }
@@ -110,23 +147,45 @@ type applyStepMsg struct {
 	err   error
 }
 
-// applyVerifyMsg carries the post-apply drift re-check.
+// applyVerifyMsg carries the post-run re-check: drift for a sync, runtime
+// status for a Runtime kind.
 type applyVerifyMsg struct {
-	result driftResultMsg
+	result        driftResultMsg
+	runtimeStatus runtime.Status
+	runtimeErr    error
 }
 
+// enterApplyScreen shows in-flight work, or a finished sync, as it is;
+// otherwise (including after a Runtime plan) it plans a sync afresh.
 func (m Model) enterApplyScreen() (tea.Model, tea.Cmd) {
 	m.screen = screenApply
-	if m.apply.running() || m.apply.stage == applyDone {
+	if m.apply.running() || (m.apply.kind == applySync && m.apply.stage == applyDone) {
 		return m, nil
 	}
+	m.apply.kind = applySync
 	return m.startApplyPlan(false)
 }
 
-// startApplyPlan reads every section with a selection from both routers and
-// builds the plan from those fresh reads.
+// writeBusy explains why no new write may start now, or returns "". Only
+// one write path runs at a time: writing is held from the moment a
+// confirmed plan starts running until its verification lands, and a plan
+// still being built or checked would be replaced by a new one.
+func (m Model) writeBusy() string {
+	switch {
+	case m.writing:
+		return "a write is already running on the Apply screen (4) — wait for it to finish"
+	case m.apply.running():
+		return "the Apply screen (4) is busy — wait for it to finish"
+	}
+	return ""
+}
+
+// startApplyPlan builds a plan of the current kind from fresh reads: every
+// section with a selection for a sync, the pair's runtime objects for a
+// Runtime kind. A recheck keeps the confirmed plan's kind and backup name.
 func (m Model) startApplyPlan(recheck bool) (tea.Model, tea.Cmd) {
-	if m.selectedCount() == 0 {
+	kind := m.apply.kind
+	if kind == applySync && m.selectedCount() == 0 {
 		m.apply = applyState{stage: applyIdle}
 		return m, nil
 	}
@@ -135,6 +194,7 @@ func (m Model) startApplyPlan(recheck bool) (tea.Model, tea.Cmd) {
 		m.apply.stage = applyRechecking
 	} else {
 		m.apply = applyState{
+			kind:       kind,
 			stage:      applyPlanning,
 			backupName: "mtha-pre-apply-" + time.Now().Format("20060102-150405"),
 		}
@@ -142,11 +202,22 @@ func (m Model) startApplyPlan(recheck bool) (tea.Model, tea.Cmd) {
 
 	ctx := m.runtimeCtx()
 	clientA, clientB := m.pollers["a"].Client, m.pollers["b"].Client
+	backupName := m.apply.backupName
+
+	if kind != applySync {
+		plans := m.runtimePlans
+		action := kind.runtimeAction()
+		return m, func() tea.Msg {
+			p, err := runtime.Writes(ctx, clientA, clientB, plans, action, backupName)
+			return applyPlanMsg{plan: p, err: err, recheck: recheck}
+		}
+	}
+
 	sectionOrder := m.driftSections
 	choices := m.selectionSnapshot()
 	opts := plan.Options{
 		Exempt:     m.pair.Sync.Exempt,
-		BackupName: m.apply.backupName,
+		BackupName: backupName,
 		Users:      m.restUsers(),
 	}
 
@@ -219,7 +290,7 @@ func (m Model) handleApplyMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case applyPlanMsg:
 		if msg.err != nil {
-			m.apply = applyState{stage: applyIdle, err: msg.err}
+			m.apply = applyState{kind: m.apply.kind, stage: applyIdle, err: msg.err}
 			return m, nil
 		}
 		if msg.recheck && msg.plan.Render() == m.apply.plan.Render() {
@@ -251,11 +322,20 @@ func (m Model) handleApplyMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case applyVerifyMsg:
 		m.apply.stage = applyDone
-		m.apply.residual = msg.result.data
-		m.apply.verifyErr = msg.result.err
+		m.writing = false
 		for _, a := range applyActionEvents(m.apply) {
 			m.journal.Record(a)
 		}
+		if m.apply.kind != applySync {
+			// Fold the re-verification into the Runtime screen and readiness.
+			m.apply.runtimeStatus = msg.runtimeStatus
+			m.apply.verifyErr = msg.runtimeErr
+			m.runtimeStatus = msg.runtimeStatus
+			m.runtimeErr = msg.runtimeErr
+			return m, nil
+		}
+		m.apply.residual = msg.result.data
+		m.apply.verifyErr = msg.result.err
 		// Fold the fresh drift into the Drift screen and readiness, and
 		// drop selections the apply resolved.
 		if m.driftData == nil {
@@ -271,6 +351,7 @@ func (m Model) handleApplyMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) startApplyRun() (tea.Model, tea.Cmd) {
+	m.writing = true
 	m.apply.stage = applyRunning
 	m.apply.notice = ""
 	m.apply.err = nil
@@ -301,6 +382,13 @@ func (m Model) startApplyVerify() (tea.Model, tea.Cmd) {
 	m.apply.stage = applyVerifying
 	ctx := m.runtimeCtx()
 	clientA, clientB := m.pollers["a"].Client, m.pollers["b"].Client
+	if m.apply.kind != applySync {
+		plans := m.runtimePlans
+		return m, func() tea.Msg {
+			status, err := runtime.Verify(ctx, clientA, clientB, plans)
+			return applyVerifyMsg{runtimeStatus: status, runtimeErr: err}
+		}
+	}
 	sections := m.apply.plan.Sections()
 	exempt := m.pair.Sync.Exempt
 	return m, func() tea.Msg {
@@ -338,6 +426,10 @@ func (m Model) handleApplyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			if !m.writeMode {
 				m.apply.notice = "read-only — restart with -write to apply this plan"
+				return m, nil
+			}
+			if m.writing {
+				m.apply.notice = m.writeBusy()
 				return m, nil
 			}
 			if len(masterTargets(m, m.apply.plan.Targets())) > 0 {
@@ -395,7 +487,7 @@ func possibleMaster(m Model, router string) bool {
 
 func renderApply(m Model) string {
 	var b strings.Builder
-	b.WriteString(styleTitle.Render(fmt.Sprintf("mtha — %s — apply", m.pair.Name)))
+	b.WriteString(styleTitle.Render(fmt.Sprintf("mtha — %s — %s", m.pair.Name, m.apply.kind.title())))
 	b.WriteString("\n\n")
 
 	a := m.apply
@@ -439,7 +531,7 @@ func renderApply(m Model) string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(styleStatusBar.Render(fmt.Sprintf(" %s | %s | apply | %s ", m.pair.Name, modeLabel(m.writeMode), applyHint(a.stage))))
+	b.WriteString(styleStatusBar.Render(fmt.Sprintf(" %s | %s | %s | %s ", m.pair.Name, modeLabel(m.writeMode), a.kind.title(), applyHint(a.stage))))
 	return b.String()
 }
 
@@ -484,7 +576,7 @@ func renderPlanOps(a applyState) []string {
 	if len(a.plan.Skipped) > 0 {
 		lines = append(lines, styleDegraded.Render("Skipped"))
 		for _, s := range a.plan.Skipped {
-			lines = append(lines, fmt.Sprintf("  %s %s [%s]: %s", s.Section, s.Ref, s.Direction, styleMuted.Render(s.Reason)))
+			lines = append(lines, fmt.Sprintf("  %s: %s", s.Where(), styleMuted.Render(s.Reason)))
 		}
 	}
 	return lines
@@ -545,6 +637,9 @@ func renderApplyResult(a applyState) []string {
 	if a.verifyErr != nil {
 		lines = append(lines, styleDown.Render("verify error: "+a.verifyErr.Error()))
 	}
+	if a.kind != applySync {
+		return append(lines, renderRuntimeVerify(a)...)
+	}
 	sections := a.plan.Sections()
 	sort.Strings(sections)
 	residual := 0
@@ -569,6 +664,35 @@ func renderApplyResult(a applyState) []string {
 		lines = append(lines, styleMuted.Render("residual differences remain — see the Drift screen (2)"))
 	}
 	return lines
+}
+
+// renderRuntimeVerify reports the re-verification after a Runtime deploy
+// or remove: every object ok, or every object gone (or left alone as not
+// mtha's), respectively.
+func renderRuntimeVerify(a applyState) []string {
+	var left []string
+	for _, router := range []string{"a", "b"} {
+		for _, it := range a.runtimeStatus[router] {
+			done := it.State == runtime.StateOK
+			if a.kind == applyRuntimeRemove {
+				done = it.State == runtime.StateMissing || it.State == runtime.StateConflict
+			}
+			if !done {
+				left = append(left, fmt.Sprintf("router %s: %s %s", strings.ToUpper(router), it.Label, it.State))
+			}
+		}
+	}
+	if len(left) == 0 {
+		if a.verifyErr != nil {
+			return nil
+		}
+		return []string{styleReady.Render("verified — see the Runtime screen (3)")}
+	}
+	lines := []string{styleDegraded.Render(fmt.Sprintf("%d object(s) not as intended:", len(left)))}
+	for _, l := range left {
+		lines = append(lines, "  "+l)
+	}
+	return append(lines, styleMuted.Render("see the Runtime screen (3)"))
 }
 
 func applyHint(stage applyStage) string {

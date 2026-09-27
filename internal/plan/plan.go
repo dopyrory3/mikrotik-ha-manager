@@ -127,6 +127,18 @@ type Skip struct {
 	Ref       HunkRef
 	Direction Direction
 	Reason    string
+	// Router is set, instead of Direction, for a skip that isn't a synced
+	// hunk: a Runtime object left alone on that router.
+	Router string
+}
+
+// Where names what was skipped, for the dry run: "section ref [A→B]" for a
+// sync hunk, "ref [router A]" for a Runtime object.
+func (s Skip) Where() string {
+	if s.Router != "" {
+		return fmt.Sprintf("%s [router %s]", s.Ref, strings.ToUpper(s.Router))
+	}
+	return fmt.Sprintf("%s %s [%s]", s.Section, s.Ref, s.Direction)
 }
 
 // Plan is the ordered list of writes for one apply, grouped by target
@@ -201,17 +213,27 @@ func Build(inputs []SectionInput, opts Options) Plan {
 		if len(ops) == 0 {
 			continue
 		}
-		p.Ops = append(p.Ops, Op{
-			Router: target,
-			Method: MethodCommand,
-			Path:   "/system/backup/save",
-			Body:   map[string]string{"name": backupName},
-			Note:   "pre-apply backup of router " + target,
-		})
+		p.Ops = append(p.Ops, BackupOp(target, backupName))
 		p.Ops = append(p.Ops, ops...)
 	}
 	p.Skipped = skipped
 	return p
+}
+
+// BackupOp is the pre-apply /system/backup/save that starts every router's
+// writes in a plan (project.md §5.4); empty backupName means
+// DefaultBackupName.
+func BackupOp(router, backupName string) Op {
+	if backupName == "" {
+		backupName = DefaultBackupName
+	}
+	return Op{
+		Router: router,
+		Method: MethodCommand,
+		Path:   "/system/backup/save",
+		Body:   map[string]string{"name": backupName},
+		Note:   "pre-apply backup of router " + router,
+	}
 }
 
 // row is one selected entry on one router: its raw form (for ".id") and its

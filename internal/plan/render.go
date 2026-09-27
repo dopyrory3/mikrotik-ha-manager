@@ -47,7 +47,7 @@ func (p Plan) Render() string {
 	if len(p.Skipped) > 0 {
 		b.WriteString("skipped:\n")
 		for _, s := range p.Skipped {
-			fmt.Fprintf(&b, "  %s %s [%s]: %s\n", s.Section, s.Ref, s.Direction, s.Reason)
+			fmt.Fprintf(&b, "  %s: %s\n", s.Where(), s.Reason)
 		}
 	}
 	return b.String()
