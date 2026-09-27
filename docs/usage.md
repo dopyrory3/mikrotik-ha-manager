@@ -27,10 +27,10 @@ Errors go to stderr prefixed with `mtha:` and the process exits non-zero —
 including a missing config file, an unparseable one, a pair that is missing
 router `a` or `b`, and an unset credential variable.
 
-`-write` gates the Runtime screen's deploy/remove actions, shown in the status
-bar as `read-only` or `write`; without it you can still preview what deploy or
-remove would do, just not confirm it. Apply and failover, which will use it
-too, arrive in later milestones.
+`-write` gates the Runtime screen's deploy/remove actions and the Apply
+screen, shown in the status bar as `read-only` or `write`; without it you can
+still preview what deploy, remove or apply would do, just not confirm it.
+Failover, which will use it too, arrives in a later milestone.
 
 ## Screens
 
@@ -84,9 +84,16 @@ expanded when that hunk has the cursor.
 
 What counts as a difference, and which entries are matched to each other, is
 described in [configuration.md](configuration.md#how-drift-is-computed).
-Changing a rule's comment — or inserting an uncommented firewall rule near the
-top of a chain — can shift identities and produce diffs that look larger than
-the underlying change.
+Changing a rule's comment — or inserting an uncommented firewall rule — can
+shift identities (up to the next commented rule in that chain) and produce
+diffs that look larger than the underlying change.
+
+**Selecting hunks to sync.** In the hunk list, `space` cycles the hunk under
+the cursor through `[A→B]` (make B match A), `[B→A]` (make A match B) and
+unselected. `a` / `b` select every hunk in the current section A→B / B→A, and
+`c` clears the section's selection. The section list shows how many hunks are
+selected in each section. Then press `4` to review the plan on the Apply
+screen. Selections survive a refresh as long as the hunk still differs.
 
 ### Runtime
 
@@ -118,6 +125,42 @@ without it you'll see `read-only — restart with -write to actually run this`.
 Removing flags any VRRP interface deletion on a router currently holding VRRP
 master with a `‼`, since it can drop a live VIP.
 
+### Apply
+
+Press `4` (or `tab` from Runtime) to open it. Every time you enter the screen
+it reads the selected sections fresh from both routers and builds a **dry
+run**: the exact REST operations it would send, numbered and grouped by the
+router they write to, each with a one-line explanation.
+
+- Each router's operations start with `POST /system/backup/save` (named
+  `mtha-pre-apply-<timestamp>`), so there is a backup to restore from.
+- Then per section: `DELETE`s, `PATCH`es (plus `POST .../unset` for fields
+  the source router leaves at their default), and `PUT`s (RouterOS REST's
+  "add") in the source router's order.
+- New firewall rules carry `place-before`, anchored to the next rule in the
+  same chain that already exists on the target, so they land in the same
+  position as on the source.
+- Selected hunks that won't be written are listed under **Skipped** with a
+  reason: the hunk no longer differs, the entry is a user (REST can't read
+  passwords, so creating one would leave it passwordless), or it would add
+  or remove a built-in `ip/service` entry.
+
+Press `y` to apply. Without `-write` this only tells you the session is
+read-only. If the plan writes to a router that currently holds VRRP master —
+or whose VRRP state isn't known (not polled yet, unreachable) — you must then
+also press `Y` (shift+y); `n`/`esc` cancels. Just before running, mtha
+re-reads both routers and rebuilds the plan; if anything changed, nothing is
+written and the updated plan is shown for review instead.
+
+Operations run one at a time with a progress marker (`…` running, `✓` done,
+`✗` failed). The run stops at the first failure — a failed backup means
+nothing else is written to that router. Afterwards (success or failure) drift
+detection re-runs over the touched sections and each is reported `clean` or
+with its residual differences; the Drift screen and readiness verdict are
+updated with the result. Press `r` to re-plan.
+
+Long plans scroll with `j`/`k`.
+
 ## Keybindings
 
 Global, on any screen:
@@ -127,7 +170,8 @@ Global, on any screen:
 | `1` | Overview |
 | `2` | Drift |
 | `3` | Runtime |
-| `tab` | Cycle Overview → Drift → Runtime → Overview |
+| `4` | Apply |
+| `tab` | Cycle Overview → Drift → Runtime → Apply → Overview |
 | `q`, `ctrl+c` | Quit |
 
 Drift screen:
@@ -139,6 +183,9 @@ Drift screen:
 | `esc` | Move the cursor back to the section list |
 | `up`, `k` | Move up |
 | `down`, `j` | Move down |
+| `space` | Cycle the hunk's selection: A→B, B→A, unselected |
+| `a` / `b` | Select every hunk in the section A→B / B→A |
+| `c` | Clear the section's selection |
 
 Runtime screen:
 
@@ -149,6 +196,16 @@ Runtime screen:
 | `x` | Show a remove confirmation |
 | `y` | Confirm the pending deploy/remove (requires `-write`) |
 | `n`, `esc` | Cancel the pending confirmation |
+
+Apply screen:
+
+| Key | Action |
+| --- | --- |
+| `r` | Re-read both routers and rebuild the plan |
+| `y` | Apply the plan (requires `-write`) |
+| `Y` | Second confirmation when writing to the current VRRP master |
+| `n`, `esc` | Cancel a pending confirmation |
+| `up`, `k` / `down`, `j` | Scroll the plan |
 
 There is no in-app help overlay yet (`?` is not wired up); this document is
 the keybinding reference.

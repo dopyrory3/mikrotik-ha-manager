@@ -1,0 +1,8 @@
+router B:
+  1. POST /system/backup/save {"name":"bk"}
+       pre-apply backup of router b
+  2. PATCH /ip/service/*1 {"port":"443"}
+       update www-ssl to match router a
+skipped:
+  user alice [A→B]: user passwords are not readable over REST; creating this user would leave it with no password
+  ip/service api [A→B]: entries in this section are built in; they can be changed but not added

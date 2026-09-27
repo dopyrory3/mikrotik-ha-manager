@@ -1,0 +1,7 @@
+router B:
+  1. POST /system/backup/save {"name":"mtha-pre-apply-test"}
+       pre-apply backup of router b
+  2. PUT /ip/firewall/filter {"action":"accept","chain":"input","comment":"allow-dns","dst-port":"53","place-before":"*B","protocol":"udp"}
+       create allow-dns (from router a), placed before drop-rest
+  3. PUT /ip/firewall/filter {"action":"drop","chain":"forward","log":"true"}
+       create forward@fwd-established#1 (from router a), appended at end of chain

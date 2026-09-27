@@ -82,3 +82,58 @@ func TestEntriesEqualMissingNonDefaultDiffers(t *testing.T) {
 		t.Fatalf("expected single comment change, got %+v", changes)
 	}
 }
+
+func TestSelectRouteIsOptInByTag(t *testing.T) {
+	raw := []Entry{
+		{".id": "*1", "dst-address": "0.0.0.0/0", "gateway": "203.0.113.1"},
+		{".id": "*2", "dst-address": "10.9.0.0/16", "gateway": "10.0.0.9", "comment": "mtha:vpn"},
+		{".id": "*3", "dst-address": "10.8.0.0/16", "gateway": "10.0.0.8", "comment": "site-b"},
+		{".id": "*4", "dst-address": "10.0.0.0/24", "dynamic": "true", "comment": "mtha:connected"},
+	}
+
+	got := Select("ip/route", raw)
+	if len(got) != 1 || got[0][".id"] != "*2" {
+		t.Fatalf("expected only the mtha:-tagged static route, got %v", got)
+	}
+
+	norm := Normalize("ip/route", raw, nil)
+	if len(norm) != 1 || norm[0]["comment"] != "mtha:vpn" {
+		t.Fatalf("Normalize must apply the same selection, got %v", norm)
+	}
+}
+
+// The tag filter is specific to ip/route; other sections keep untagged
+// entries.
+func TestSelectKeepsUntaggedOutsideRoutes(t *testing.T) {
+	raw := []Entry{{"chain": "input"}, {"chain": "input", "comment": "x"}}
+	if got := Select("ip/firewall/filter", raw); len(got) != 2 {
+		t.Fatalf("expected both firewall rules selected, got %v", got)
+	}
+}
+
+func TestNormalizeDropsStateFields(t *testing.T) {
+	raw := []Entry{{
+		".id": "*1", "chain": "input", "action": "accept",
+		"bytes": "123", "packets": "4", "invalid": "false", "dynamic": "false",
+	}}
+
+	out := Normalize("ip/firewall/filter", raw, nil)
+	for _, f := range []string{".id", "bytes", "packets", "invalid", "dynamic"} {
+		if _, ok := out[0][f]; ok {
+			t.Errorf("state field %q should have been dropped, got %v", f, out[0])
+		}
+	}
+	if out[0]["action"] != "accept" {
+		t.Errorf("config field should survive, got %v", out[0])
+	}
+}
+
+func TestEntriesEqualSortsChanges(t *testing.T) {
+	a := Entry{"z": "1", "a": "1", "m": "1"}
+	b := Entry{"z": "2", "a": "2", "m": "2"}
+
+	_, changes := EntriesEqual(a, b)
+	if len(changes) != 3 || changes[0].Field != "a" || changes[1].Field != "m" || changes[2].Field != "z" {
+		t.Fatalf("expected changes sorted by field, got %+v", changes)
+	}
+}

@@ -1,6 +1,6 @@
 // Package ui holds the Bubble Tea root model and per-screen views.
-// Milestones 1-2-4 ship the Overview, Drift and Runtime screens (project.md
-// §9); Apply, Failover and Events from §7.1 land in later milestones.
+// Milestones 1-4 ship the Overview, Drift, Runtime and Apply screens
+// (project.md §9); Failover and Events from §7.1 land in later milestones.
 package ui
 
 import (
@@ -12,6 +12,7 @@ import (
 	"mtha/internal/config"
 	"mtha/internal/diff"
 	"mtha/internal/model"
+	"mtha/internal/plan"
 	"mtha/internal/poll"
 	"mtha/internal/runtime"
 )
@@ -26,6 +27,7 @@ const (
 	screenOverview screenID = iota
 	screenDrift
 	screenRuntime
+	screenApply
 )
 
 // runtimeActionKind identifies which of the Runtime screen's two write
@@ -63,6 +65,10 @@ type Model struct {
 	driftSection    int
 	driftHunk       int
 	driftFocusHunks bool
+	// driftSelected is the operator's hunk selection per section, with
+	// the sync direction chosen for each (see drift.go); the Apply screen
+	// plans from it.
+	driftSelected map[string]map[plan.HunkRef]plan.Direction
 
 	runtimePlans    map[string]runtime.Plan
 	runtimePlanErr  error
@@ -70,6 +76,8 @@ type Model struct {
 	runtimeFetching bool
 	runtimeErr      error
 	runtimePending  *pendingRuntimeAction
+
+	apply applyState
 
 	width, height int
 	quitting      bool
@@ -146,6 +154,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.driftFetching = false
 		m.driftErr = msg.err
 		m.driftData = msg.data
+		m.pruneDriftSelection(msg.data)
 		return m, nil
 
 	case runtimeVerifyMsg:
@@ -159,6 +168,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.runtimeErr = msg.result.Err
 		m.runtimeStatus = msg.result.Status
 		return m, nil
+
+	case applyPlanMsg, applyStepMsg, applyVerifyMsg:
+		return m.handleApplyMsg(msg)
 
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -189,12 +201,17 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "3":
 		return m.enterRuntimeScreen()
 
+	case "4":
+		return m.enterApplyScreen()
+
 	case "tab":
 		switch m.screen {
 		case screenOverview:
 			return m.enterDriftScreen()
 		case screenDrift:
 			return m.enterRuntimeScreen()
+		case screenRuntime:
+			return m.enterApplyScreen()
 		default:
 			m.screen = screenOverview
 			return m, nil
@@ -206,6 +223,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleDriftKey(msg)
 	case screenRuntime:
 		return m.handleRuntimeKey(msg)
+	case screenApply:
+		return m.handleApplyKey(msg)
 	}
 	return m, nil
 }
@@ -227,6 +246,8 @@ func (m Model) View() string {
 		return renderDrift(m)
 	case screenRuntime:
 		return renderRuntime(m)
+	case screenApply:
+		return renderApply(m)
 	default:
 		return renderDashboard(m)
 	}
