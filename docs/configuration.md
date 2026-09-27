@@ -70,9 +70,9 @@ pairs:
 | --- | --- | --- |
 | `pairs` | list of pairs | A pair file with no pairs is an error |
 
-Multiple pairs may be defined. Until the pair-picker screen ships, a file
-with more than one pair requires `-pair <name>` on the command line; with
-exactly one pair the name is inferred.
+Multiple pairs may be defined. A file with more than one pair requires
+`-pair <name>` on the command line; with exactly one pair the name is
+inferred.
 
 ## Pair
 

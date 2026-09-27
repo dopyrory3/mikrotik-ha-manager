@@ -251,7 +251,7 @@ Apply screen:
 | --- | --- |
 | `r` | Re-read both routers and rebuild the plan |
 | `y` | Apply the plan (requires `-write`) |
-| `Y` | Second confirmation when writing to the current VRRP master |
+| `Y` | Second confirmation when writing to the current master or a router whose VRRP state is unknown |
 | `n`, `esc` | Cancel a pending confirmation |
 | `up`, `k` / `down`, `j` | Scroll the plan |
 

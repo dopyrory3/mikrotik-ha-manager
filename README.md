@@ -8,19 +8,20 @@ its own:
 - What configuration has drifted between the two routers?
 - Push selected config differences in either direction, with a dry run,
   a pre-apply backup and post-apply verification.
-- Deploy the runtime failover logic, and (later milestone) rehearse a
-  planned failover.
+- Deploy and verify the runtime failover logic.
+- Rehearse a planned failover (planned; not implemented yet).
 
 It is `kubectl`, not a control plane. Nothing that happens *during* a failure
 depends on `mtha` running — VRRP, netwatch and the scripts that adjust
 priority all live on the routers themselves. The tool is for designing,
 deploying, verifying, syncing and rehearsing.
 
-> **Status: early.** Milestones 1–4 and 6 are built: Overview, Drift, Runtime
+> **Status:** Milestones 1–4, 6 and the in-app help portion of 7 are done:
+> Overview, Drift, Runtime
 > (VRRP interface provisioning, netwatch/on-master/on-backup/scheduler
 > automation), Apply (selective sync with dry run, backup and verification),
-> and Events (merged router log and tool-action timeline). Planned failover is
-> the remaining milestone. See [Status](#status) below.
+> and Events (merged router log and Runtime-action timeline). Milestone 5
+> (planned failover) has not started. See [Status](#status) below.
 
 ## Requirements
 
@@ -62,10 +63,10 @@ mtha
 ```
 
 The session opens on the **Overview** screen: side-by-side status for both
-routers plus a single readiness verdict. Press `2` for **Drift**, `3` for
-**Runtime**, `4` for **Apply**, `6` for **Events**, or `?` for help on any
-screen: select hunks on Drift (`space`, or `a`/`b` for a whole section), then
-review and run the plan on Apply.
+routers plus a single readiness verdict. Press `1` for **Overview**, `2` for
+**Drift**, `3` for **Runtime**, `4` for **Apply**, `6` for **Events**, or `?`
+for help on any screen: select hunks on Drift (`space`, or `a`/`b` for a
+whole section), then review and run the plan on Apply.
 
 See [docs/usage.md](docs/usage.md) for screens and keybindings, and
 [docs/configuration.md](docs/configuration.md) for the pair file reference.
@@ -107,9 +108,8 @@ See [docs/usage.md](docs/usage.md) for screens and keybindings, and
 | 6. Events | Log merge, timeline | Done |
 | 7. Polish | In-app help | Done |
 
-Multi-pair (a pair picker screen) and a GoReleaser release pipeline are
-dropped from scope (project.md §10.1). A pair file may still define several
-pairs; pick one with `-pair <name>`. Builds are plain `go build`.
+A pair file may define several pairs; select one with `-pair <name>`. Builds
+are plain `go build`.
 
 ## Documentation
 
