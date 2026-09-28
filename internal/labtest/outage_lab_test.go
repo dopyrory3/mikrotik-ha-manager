@@ -70,14 +70,14 @@ func TestLabOutageLinkFlapMidSession(t *testing.T) {
 // panel (the right-hand one, from column 41) with vrrp-lan as master.
 func bPolledMaster(view string) bool {
 	for _, l := range strings.Split(view, "\n") {
-		if r := []rune(l); len(r) > 41 && vrrpMaster.MatchString(string(r[41:])) {
+		if r := []rune(l); len(r) > 41 && vrrpLanMaster.MatchString(string(r[41:])) {
 			return true
 		}
 	}
 	return false
 }
 
-var vrrpMaster = regexp.MustCompile(`vrrp vrrp-lan\s+master\b`)
+var vrrpLanMaster = regexp.MustCompile(`vrrp vrrp-lan\s+master\b`)
 
 // outageSession opens a session on the pair, runs induce to take router a
 // away, and asserts what the operator sees: the outage on the Overview (a
@@ -150,11 +150,11 @@ func outageSession(t *testing.T, lab *labtest.Lab, what string, wantUnreachable 
 			return false
 		}
 		rows := timelineSince(labtest.StripANSI(m.View()), start)
-		return hasRow(rows, "B", "vrrp", "now MASTER") && hasRow(rows, "B", "vrrp", "now BACKUP")
+		return hasStampedRow(rows, "B", "vrrp", "now MASTER") && hasStampedRow(rows, "B", "vrrp", "now BACKUP")
 	})
 	t.Logf("Events after recovery:\n%s", labtest.StripANSI(m.View()))
 	rows := timelineSince(labtest.StripANSI(m.View()), start)
-	if master, backup := rowIndex(rows, "B", "vrrp", "now MASTER"), rowIndex(rows, "B", "vrrp", "now BACKUP"); backup > master {
+	if master, backup := stampedRowIndex(rows, "B", "vrrp", "now MASTER"), stampedRowIndex(rows, "B", "vrrp", "now BACKUP"); backup > master {
 		// Newest first: the hand-back must be above the takeover.
 		t.Errorf("b's hand-back (row %d) is not after its takeover (row %d)", backup, master)
 	}
@@ -165,8 +165,8 @@ func outageSession(t *testing.T, lab *labtest.Lab, what string, wantUnreachable 
 	}
 }
 
-// timelineRow is one row of the Events screen's timeline.
-type timelineRow struct {
+// stampedRow is one row of the Events screen's timeline.
+type stampedRow struct {
 	at             time.Time
 	src, kind, msg string
 }
@@ -176,8 +176,8 @@ var timelineLine = regexp.MustCompile(`^(\w{3} \d{2} \d{2}:\d{2}:\d{2})\s+(A|B|t
 // timelineSince parses the timeline rows of an Events screen, newest first
 // as drawn, keeping those at or after since (less a second: log timestamps
 // have 1s resolution).
-func timelineSince(view string, since time.Time) []timelineRow {
-	var rows []timelineRow
+func timelineSince(view string, since time.Time) []stampedRow {
+	var rows []stampedRow
 	for _, l := range strings.Split(view, "\n") {
 		m := timelineLine.FindStringSubmatch(strings.TrimRight(l, " "))
 		if m == nil {
@@ -191,12 +191,12 @@ func timelineSince(view string, since time.Time) []timelineRow {
 		if at.Before(since.Add(-time.Second)) {
 			continue
 		}
-		rows = append(rows, timelineRow{at: at, src: m[2], kind: m[3], msg: m[4]})
+		rows = append(rows, stampedRow{at: at, src: m[2], kind: m[3], msg: m[4]})
 	}
 	return rows
 }
 
-func rowIndex(rows []timelineRow, src, kind, msg string) int {
+func stampedRowIndex(rows []stampedRow, src, kind, msg string) int {
 	for i, r := range rows {
 		if r.src == src && r.kind == kind && strings.Contains(r.msg, msg) {
 			return i
@@ -205,8 +205,8 @@ func rowIndex(rows []timelineRow, src, kind, msg string) int {
 	return -1
 }
 
-func hasRow(rows []timelineRow, src, kind, msg string) bool {
-	return rowIndex(rows, src, kind, msg) >= 0
+func hasStampedRow(rows []stampedRow, src, kind, msg string) bool {
+	return stampedRowIndex(rows, src, kind, msg) >= 0
 }
 
 // A router rebooting in the middle of an apply: 120 rules synced a→b into
