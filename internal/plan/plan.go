@@ -325,11 +325,18 @@ func buildSection(in SectionInput, opts Options) ([]Op, []Skip) {
 			chosen = append(chosen, selected{hunk: h, dir: dir})
 		}
 	}
-	orders := map[HunkRef]diff.OrderHunk{}
+	// Chains to reorder, in the section's order.
+	type chosenOrder struct {
+		o   diff.OrderHunk
+		dir Direction
+	}
+	var reorders []chosenOrder
 	for _, o := range sd.Order {
 		ref := OrderRef(o)
 		stillDiffers[ref] = true
-		orders[ref] = o
+		if dir, ok := in.Choices[ref]; ok {
+			reorders = append(reorders, chosenOrder{o: o, dir: dir})
+		}
 	}
 
 	var skips []Skip
@@ -338,18 +345,6 @@ func buildSection(in SectionInput, opts Options) ([]Op, []Skip) {
 			skips = append(skips, Skip{
 				Section: in.Section, Ref: ref, Direction: in.Choices[ref],
 				Reason: "no longer differs (resolved, or changed since it was selected)",
-			})
-			continue
-		}
-		if o, ok := orders[ref]; ok {
-			// docs/design-questions.md §2: planning a move waits for the
-			// lab to confirm RouterOS REST's move call. Deleting and
-			// re-creating the rules is no stand-in: the chain would run
-			// without them for a moment, and they'd lose their counters
-			// and ".id".
-			skips = append(skips, Skip{
-				Section: in.Section, Ref: ref, Direction: in.Choices[ref],
-				Reason: fmt.Sprintf("%s out of order (%s); %s", countRules(len(o.Moved), o.Rules), movedList(o.Moved), orderSkipReason),
 			})
 		}
 	}
@@ -425,9 +420,29 @@ func buildSection(in SectionInput, opts Options) ([]Op, []Skip) {
 		}
 	}
 
+	// Moves come after deletes and updates, neither of which removes or
+	// re-IDs a rule a move names (a delete is of a rule on the target
+	// only; a PATCH keeps the ".id"), and before creates, so that each create's
+	// place-before anchor is already where the source has it
+	// (docs/design-questions.md §2). A chain whose moves can't be verified
+	// against the target is skipped whole: half a reorder is still wrong.
+	var moves []Op
+	for _, c := range reorders {
+		ops, reason := moveOps(in.Section, c.o, c.dir, sides[c.dir.Source()], sides[c.dir.Target()])
+		if reason != "" {
+			skips = append(skips, Skip{
+				Section: in.Section, Ref: OrderRef(c.o), Direction: c.dir,
+				Reason: fmt.Sprintf("%s out of order (%s); not moved: %s. Reorder this chain by hand", countRules(len(c.o.Moved), c.o.Rules), movedList(c.o.Moved), reason),
+			})
+			continue
+		}
+		moves = append(moves, ops...)
+	}
+
 	sort.SliceStable(creates, func(i, j int) bool { return creates[i].srcIndex < creates[j].srcIndex })
 
 	ops := append(deletes, updates...)
+	ops = append(ops, moves...)
 	for _, c := range creates {
 		ops = append(ops, c.op)
 	}
@@ -561,9 +576,6 @@ func stringOf(v any) string {
 	}
 	return fmt.Sprintf("%v", v)
 }
-
-// orderSkipReason is why a selected order finding produces no ops.
-const orderSkipReason = "reorder this chain by hand; move is not implemented"
 
 func countRules(moved, of int) string {
 	return fmt.Sprintf("%d of %d rule(s)", moved, of)
