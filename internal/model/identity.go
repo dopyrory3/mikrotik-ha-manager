@@ -46,7 +46,8 @@ func IsFirewallSection(section string) bool {
 //   - ip/dhcp-server/network uses address.
 //   - ip/dhcp-server/lease uses "server|mac-address", or address when the
 //     lease has no mac-address.
-//   - ip/dns/static uses "name|type|value" (see dnsStaticIdentity).
+//   - ip/dns/static uses "name|type|value", with regexp in place of name
+//     for a regexp record (see dnsStaticIdentity).
 //   - Any other section uses name, then address, then comment (deduplicated
 //     as above), then a bare ordinal.
 //
@@ -154,33 +155,71 @@ var nameKeyedSections = map[string]bool{
 	"system/scheduler": true,
 }
 
-// dnsValueFields maps a DNS static record type to the field holding its
-// value. Only A and CNAME were surveyed (docs/lab-rest-contract.md); other
-// types are added here once their shape is known.
-var dnsValueFields = map[string]string{
-	"A":     "address",
-	"CNAME": "cname",
+// dnsValueFields maps a DNS static record type to the fields holding its
+// value, in the order they are joined into the identity. The shapes are the
+// device's own (docs/lab-rest-contract.md, write probe 1): RouterOS returns
+// only the record type's value fields, and refuses a second enabled record
+// with the same name, type and every one of these fields (write probe 2), so
+// together they are the record's natural key.
+//
+// Where a type has several fields, the free-text one goes last so the joined
+// value stays unambiguous: MX preference and SRV priority/weight/port are
+// numbers, the exchange and target are names. MX and SRV numbers are always
+// returned (RouterOS fills in "0"), so a record created without them still
+// keys the same on both routers.
+//
+// NXDOMAIN has no value field: its key is the name and type alone, which is
+// also what RouterOS enforces, so "name|NXDOMAIN" is the full key rather
+// than the unknown-type fallback.
+var dnsValueFields = map[string][]string{
+	"A":        {"address"},
+	"AAAA":     {"address"},
+	"CNAME":    {"cname"},
+	"MX":       {"mx-preference", "mx-exchange"},
+	"SRV":      {"srv-priority", "srv-weight", "srv-port", "srv-target"},
+	"TXT":      {"text"},
+	"NS":       {"ns"},
+	"FWD":      {"forward-to"},
+	"NXDOMAIN": {},
 }
 
-// dnsStaticIdentity identifies a DNS static record as "name|type|value", or
-// "name|type" for a type whose value field is not yet known. One name can
-// carry several records (two A records for one name is two entries), and
-// the value is what tells them apart, so the value is part of the identity:
-// re-addressing a record is a delete + create rather than a patch, by
-// design. RouterOS always reports type ("A" by default); an entry without
-// one is treated as A.
+// dnsRegexpPrefix marks the identity of a regexp record. A regexp record
+// has regexp in place of name (RouterOS refuses both), and "a.b" as a
+// regexp is a different record from the name "a.b", so the two must not
+// share an identity.
+const dnsRegexpPrefix = "regexp:"
+
+// dnsStaticIdentity identifies a DNS static record as "name|type|value",
+// where value is the type's value fields joined with "|" (see
+// dnsValueFields). One name can carry several records (two A records for
+// one name is two entries), and the value is what tells them apart, so the
+// value is part of the identity: re-addressing a record is a delete + create
+// rather than a patch, by design. Name and value are compared exactly:
+// RouterOS treats both name and TXT text as case-sensitive.
+//
+// A regexp record is "regexp:<regexp>|type|value". RouterOS always reports
+// type ("A" by default, also for a regexp record); an entry without one is
+// treated as A. A type not in dnsValueFields is identified "name|type" and
+// relies on diff.Compare's occurrence pairing.
 func dnsStaticIdentity(e Entry) string {
 	name, _ := stringField(e, "name")
+	if re, ok := stringField(e, "regexp"); ok && re != "" && name == "" {
+		name = dnsRegexpPrefix + re
+	}
 	typ, _ := stringField(e, "type")
 	if typ == "" {
 		typ = "A"
 	}
-	field, ok := dnsValueFields[typ]
+	fields, ok := dnsValueFields[typ]
 	if !ok {
 		return name + "|" + typ
 	}
-	value, _ := stringField(e, field)
-	return name + "|" + typ + "|" + value
+	id := name + "|" + typ
+	for _, f := range fields {
+		v, _ := stringField(e, f)
+		id += "|" + v
+	}
+	return id
 }
 
 func chainOf(e Entry) string {

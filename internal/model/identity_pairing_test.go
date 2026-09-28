@@ -32,18 +32,20 @@ func TestRepeatedNaturalKeyPairsByOccurrence(t *testing.T) {
 			},
 		},
 		{
+			// RouterOS allows the same record twice when one copy is
+			// disabled (write probe 2), so name|type|value can repeat.
 			section: "ip/dns/static",
 			a: []model.Entry{
 				{"name": "example", "type": "TXT", "text": "one"},
-				{"name": "example", "type": "TXT", "text": "two"},
+				{"name": "example", "type": "TXT", "text": "one", "disabled": "true"},
 			},
 			b: []model.Entry{
 				{"name": "example", "type": "TXT", "text": "one"},
-				{"name": "example", "type": "TXT", "text": "changed"},
+				{"name": "example", "type": "TXT", "text": "one", "disabled": "false"},
 			},
 			want: []diff.Hunk{
-				{Identity: "example|TXT", Occurrence: 1, OnA: true, OnB: true, Changes: []model.FieldChange{
-					{Field: "text", A: "two", B: "changed"},
+				{Identity: "example|TXT|one", Occurrence: 1, OnA: true, OnB: true, Changes: []model.FieldChange{
+					{Field: "disabled", A: "true", B: "false"},
 				}},
 			},
 		},
