@@ -195,16 +195,20 @@ func TestBuildSkipsUnsafeHunks(t *testing.T) {
 	assertGolden(t, "skips", p.Render())
 }
 
-// Narrowing who may reach the REST API, or disabling it, is refused like a
-// port change; a change to www-ssl's other fields is still planned.
+// Moving the REST API, narrowing who may reach it, disabling it or swapping
+// its certificate is refused, along with anything else in the same hunk; a
+// change to www-ssl's other fields is still planned.
 func TestBuildRefusesRESTServiceLockout(t *testing.T) {
 	cases := []struct {
 		name     string
 		b        model.Entry
 		wantSkip bool
 	}{
+		{"port", model.Entry{".id": "*1", "name": "www-ssl", "port": "8443"}, true},
 		{"address", model.Entry{".id": "*1", "name": "www-ssl", "address": "10.9.9.0/24"}, true},
 		{"disabled", model.Entry{".id": "*1", "name": "www-ssl", "disabled": "true"}, true},
+		{"certificate", model.Entry{".id": "*1", "name": "www-ssl", "certificate": "other-cert"}, true},
+		{"certificate with other field", model.Entry{".id": "*1", "name": "www-ssl", "certificate": "other-cert", "tls-version": "only-1.2"}, true},
 		{"other field", model.Entry{".id": "*1", "name": "www-ssl", "tls-version": "only-1.2"}, false},
 	}
 	for _, tc := range cases {

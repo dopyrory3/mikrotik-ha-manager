@@ -178,8 +178,8 @@ router they write to, each with a one-line explanation.
   passwords, so creating one would leave it passwordless), it would add
   or remove a built-in `ip/service` entry, or it could lock mtha out of the
   target router mid-apply. That last one covers changing the `port`,
-  `disabled` or `address` of the target's `www-ssl` service (mtha's REST
-  API), and removing the user mtha logs in to the target as (the router's
+  `disabled`, `address` or `certificate` of the target's `www-ssl` service
+  (mtha's REST API), and removing the user mtha logs in to the target as (the router's
   `user` in the pair file) or changing that user's `group` or `disabled`.
   Make such changes by hand.
 

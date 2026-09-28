@@ -435,15 +435,17 @@ func buildSection(in SectionInput, opts Options) ([]Op, []Skip) {
 }
 
 // lockoutReason is why updating the target's entry with changes could cut
-// mtha off from that router mid-apply, or "" if it can't: moving, disabling
-// or narrowing the address list of the REST API service (www-ssl), or
-// changing the group or disabled flag of the user mtha logs in as.
+// mtha off from that router mid-apply, or "" if it can't: moving, disabling,
+// narrowing the address list of, or swapping the certificate on the REST API
+// service (www-ssl), or changing the group or disabled flag of the user mtha
+// logs in as. A certificate REST clients reject under verified TLS severs the
+// connection as surely as a port change (docs/lockout-guard-findings.md §5).
 func lockoutReason(section, target string, tgt row, changes []model.FieldChange, users map[string]string) string {
 	var guarded map[string]bool
 	var reason string
 	switch {
 	case section == "ip/service" && stringOf(tgt.raw["name"]) == "www-ssl":
-		guarded = map[string]bool{"port": true, "disabled": true, "address": true}
+		guarded = map[string]bool{"port": true, "disabled": true, "address": true, "certificate": true}
 		reason = fmt.Sprintf("changes %%s of router %s's REST API service; mtha could lose its connection mid-apply", target)
 	case section == "user" && isAPIUser(tgt, target, users):
 		guarded = map[string]bool{"group": true, "disabled": true}
