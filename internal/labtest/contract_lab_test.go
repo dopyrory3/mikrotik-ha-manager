@@ -5,6 +5,8 @@ package labtest_test
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -14,27 +16,63 @@ import (
 	"mtha/internal/routeros"
 )
 
+// Sections mtha syncs when a pair lists them that testlab/pairs.yaml does
+// not: the fixture populates them, so the baseline must hold for them too.
+// tool/netwatch is left out on purpose: it is Runtime's, and its state
+// (status, since, done-tests, failed-tests) is not stripped, so it is not
+// comparable (docs/lab-rest-contract.md, tool/netwatch).
+var unlistedSections = []string{"ip/firewall/mangle", "ip/firewall/raw", "interface/vrrp"}
+
 // The pair is drift-free at baseline in every section it syncs, and the
 // fixture gives each of those sections something to compare: an empty
-// section would pass the diff without exercising it.
+// section would pass the diff without exercising it. Drift is then run a
+// second time with nothing changed, and each router's normalised entries
+// must be identical to the first run's: a field that changes on its own
+// would otherwise show as drift that comes and goes.
 func TestLabBaselineIsDriftFree(t *testing.T) {
 	lab := labtest.New(t, labtest.ReadOnly())
 	ctx := context.Background()
+	sections := append(slices.Clone(lab.Pair.Sync.Sections), unlistedSections...)
+	exempt := lab.Pair.Sync.Exempt
 
-	for _, section := range lab.Pair.Sync.Sections {
-		a, err := lab.A.GetSection(ctx, section)
-		if err != nil {
-			t.Fatalf("router a %s: %v", section, err)
+	read := func() (a, b map[string][]model.Entry) {
+		a, b = map[string][]model.Entry{}, map[string][]model.Entry{}
+		for _, section := range sections {
+			var err error
+			if a[section], err = lab.A.GetSection(ctx, section); err != nil {
+				t.Fatalf("router a %s: %v", section, err)
+			}
+			if b[section], err = lab.B.GetSection(ctx, section); err != nil {
+				t.Fatalf("router b %s: %v", section, err)
+			}
 		}
-		b, err := lab.B.GetSection(ctx, section)
-		if err != nil {
-			t.Fatalf("router b %s: %v", section, err)
-		}
-		if len(model.Select(section, a)) == 0 {
+		return a, b
+	}
+
+	a1, b1 := read()
+	for _, section := range sections {
+		if len(model.Select(section, a1[section])) == 0 {
 			t.Errorf("%s: nothing selected on router a; the fixture should populate it", section)
 		}
-		if d := diff.Compare(section, a, b, lab.Pair.Sync.Exempt); !d.Clean() {
+		if d := diff.Compare(section, a1[section], b1[section], exempt); !d.Clean() {
 			t.Errorf("%s drifts at baseline: %+v", section, d.Hunks)
+		}
+	}
+
+	// Long enough for firewall counters and VRRP adverts to move.
+	time.Sleep(5 * time.Second)
+	a2, b2 := read()
+	for _, section := range sections {
+		if d1, d2 := diff.Compare(section, a1[section], b1[section], exempt), diff.Compare(section, a2[section], b2[section], exempt); !reflect.DeepEqual(d1, d2) {
+			t.Errorf("%s: drift differs between two runs with nothing changed:\nfirst  %+v\nsecond %+v", section, d1, d2)
+		}
+		for _, r := range []struct {
+			key           string
+			first, second []model.Entry
+		}{{"a", a1[section], a2[section]}, {"b", b1[section], b2[section]}} {
+			if n1, n2 := model.Normalize(section, r.first, exempt), model.Normalize(section, r.second, exempt); !reflect.DeepEqual(n1, n2) {
+				t.Errorf("router %s %s: normalised entries changed on their own:\nfirst  %v\nsecond %v", r.key, section, n1, n2)
+			}
 		}
 	}
 }

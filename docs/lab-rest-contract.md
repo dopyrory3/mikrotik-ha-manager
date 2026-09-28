@@ -37,7 +37,11 @@ second survey covers all of them.
   (below). `internal/labtest` holds each router to the fixture's entry
   counts, and `TestLabBaselineIsDriftFree` runs the real `diff.Compare`
   over every section `testlab/pairs.yaml` syncs: **the pair is drift-free
-  at baseline in all twelve.**
+  at baseline in all twelve.** The same test also diffs `mangle`, `raw`
+  and `interface/vrrp`, which mtha syncs when listed but the lab pair does
+  not list. It then reads every section a second time and requires each
+  router's normalised entries to be unchanged. `tool/netwatch` is left out
+  on purpose: its state fields are not stripped (see below).
 - The same GET-every-section sweep as the first survey, on both routers,
   after `make test-lab` had restored the baseline.
 - Shapes that need a write (a disabled VRRP instance, a disabled or
