@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -240,18 +241,29 @@ func TestLabChurnUserLastLoggedIn(t *testing.T) {
 	lab := labtest.New(t)
 	ctx := context.Background()
 
-	// The fixture's read-only user has never logged in anywhere. Log in as
-	// it on router a only. A REST request authenticates without counting as
-	// a login (last-logged-in stays unset), so this is an SSH session:
-	// docker publishes router a's SSH on host port 2211. SSH_ASKPASS
-	// answers the password prompt without a terminal.
+	byName := func(e map[string]string) bool { return e["name"] == "lab-ro" }
+
+	// The fixture's read-only user has not logged in anywhere (unless the
+	// lab was used by hand before its golden backup: so the wait below is
+	// for a change, not for the field to appear). Log in as it on router a
+	// only. A REST request authenticates without counting as
+	// a login (last-logged-in stays unset), so this is an SSH session, which
+	// RouterOS 7.23 does stamp. The SSH port is this instance's: a fixed
+	// port would log in to another instance's router, leaving this one's
+	// field unset. SSH_ASKPASS answers the password prompt without a
+	// terminal.
+	before := only(t, lab.A, "user", byName)["last-logged-in"]
+	in, err := labtest.InstanceFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
 	askpass := filepath.Join(t.TempDir(), "askpass.sh")
 	if err := os.WriteFile(askpass, []byte("#!/bin/sh\necho lab-ro-pass\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	sshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	ssh := exec.CommandContext(sshCtx, "ssh", "-p", "2211", "-T",
+	ssh := exec.CommandContext(sshCtx, "ssh", "-p", strconv.Itoa(in.Routers[0].SSHPort), "-T",
 		"-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
 		"-o", "PreferredAuthentications=password,keyboard-interactive", "-o", "PubkeyAuthentication=no",
 		"-o", "NumberOfPasswordPrompts=1", "-o", "ConnectTimeout=10",
@@ -261,12 +273,11 @@ func TestLabChurnUserLastLoggedIn(t *testing.T) {
 		t.Fatalf("ssh to router a as lab-ro: %v\n%s", err, out)
 	}
 
-	byName := func(e map[string]string) bool { return e["name"] == "lab-ro" }
 	var a, b map[string]string
 	eventually(t, "lab-ro's last-logged-in on router a", 15*time.Second, func() error {
 		a = only(t, lab.A, "user", byName)
-		if a["last-logged-in"] == "" {
-			return fmt.Errorf("not set: %v", a)
+		if got := a["last-logged-in"]; got == "" || got == before {
+			return fmt.Errorf("not set or unchanged from %q: %v", before, a)
 		}
 		return nil
 	})
