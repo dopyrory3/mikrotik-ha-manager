@@ -8,7 +8,10 @@ ground truth that the fixtures in `internal/**/_test.go` should match.
 It was first surveyed read-only (GET only) on 2026-09-27, against a lab
 holding only the VRRP pair, and re-surveyed the same day against the
 **populated lab**: the fixture `testlab/provision.sh` now adds to every
-synced section (see [Second survey](#second-survey-populated-lab)). Another
+synced section (see [Second survey](#second-survey-populated-lab)). A third
+pass on 2026-09-28 probed the write side the design questions needed
+(record shapes, uniqueness, `move`, references; see
+[Write probes](#write-probes-design-questions)). Another
 agent may write to the same lab at any time, so any value seen may be
 transient. Values quoted here are illustrative only.
 
@@ -51,6 +54,11 @@ second survey covers all of them.
   was undone by a golden-backup restore. The two that answer an open
   question are now permanent tests: `TestLabDisabledVRRPHasNoRoleFlags`
   and `TestLabLargeSectionComesBackWhole` (`internal/labtest`).
+- **Third pass (write probes), 2026-09-28.** Throwaway lab tests on router
+  A of instance 1, inside the harness, each undone by its golden-backup
+  restore; the instance was then checked back at baseline
+  (`TestLabBaselineIsDriftFree`, and the fixture's entry counts on both
+  routers). Results are in [Write probes](#write-probes-design-questions).
 - **Still not populated: a dynamic (client-bound) DHCP lease.** The lab has
   no DHCP client on `ether2`, and a hand-made lease would be static, which
   the fixture already has. Nothing else is left empty.
@@ -216,6 +224,10 @@ Dynamic rows (`dynamic:"true"`): `.id` · `name` · `port` · `proto` ·
   dynamic.
 - `certificate` is `"none"` when unset on a TLS service, and absent on
   non-TLS services.
+- **There is no `comment` on `ip/service`.** It is never returned, it is
+  not among `set`'s arguments (`/console/inspect`), and a `PATCH` of it is
+  `400 "unknown parameter comment"`. See
+  [write probe 3](#3-ipservice-and-comment).
 - Inside the lab VMs, `www-ssl` is on port 443 on **both** routers. Router
   B's `8443` is a host port-forward, so the device's `port` does not differ
   between A and B.
@@ -287,6 +299,13 @@ parameters C (`protocol`, `dst-port`, `in-interface`, `out-interface`,
 - `passthrough` (mangle) is returned as `"true"` when set to `yes`.
 - `action` is always present. `chain` accepts any name (the large-section
   test adds rules to an unreferenced `lab-bulk` chain).
+- **`invalid` is not a usable signal on rules.** In a fresh unreferenced
+  chain the first rule read `invalid:"false"` and every later identical
+  `passthrough` rule `invalid:"true"`; a rule with an unknown `jump-target`
+  or `src-address-list` was `"true"` as well. It is state and is stripped.
+- Order is changed only by the `move` command
+  ([write probe 4](#4-the-rest-move-command)); `place-before` is
+  create-only (`PATCH` with it is `400 "unknown parameter place-before"`).
 - The fixture's commented/uncommented layout (uncommented rules before each
   chain's first commented rule, two rules sharing `lab: block smb`, a
   disabled rule, a logging rule) produces identities that match between
@@ -311,9 +330,17 @@ HH:MM:SS"`) · `disabled` · `dynamic` · `comment` C · `timeout` C
 
 - `type` is always present (`"A"` by default, `"CNAME"`, ...), and `ttl`
   is always present (`"1d"` by default).
-- An `A` record has `address`; a `CNAME` has `cname` and **no `address`
-  key**. Other types were not surveyed.
-- One `name` with two addresses is two entries with the same `name`.
+- The value lives in a **per-type field**, and only that type's fields are
+  returned (table in [write probe 1](#1-dns-static-record-shapes)): `A` and
+  `AAAA` have `address`, `CNAME` `cname`, `MX` `mx-exchange` and
+  `mx-preference`, `SRV` `srv-target`, `srv-port`, `srv-priority` and
+  `srv-weight`, `TXT` `text`, `NS` `ns`, `FWD` `forward-to`, and
+  `NXDOMAIN` none.
+- A regexp record has **`regexp` instead of `name`** (no `name` key); a
+  record cannot have both.
+- One `name` with two addresses is two entries with the same `name`. The
+  device refuses a second **enabled** record with the same name, type and
+  value ([write probe 2](#2-uniqueness-routeros-enforces)).
 
 ### `ip/pool`
 
@@ -331,6 +358,8 @@ HH:MM:SS"`) · `disabled` · `dynamic` · `comment` C · `timeout` C
 `disabled` · `dynamic` · `invalid` (state) · `comment` C
 
 - `use-radius` is `"no"` (an enum, see the rules table).
+- If its pool is deleted, `address-pool` reads back as the dead pool's
+  `.id` (`"*1"`), not its name.
 - `add-dns-entries-suffix` defaults to `"lan"`, and
   `dynamic-lease-identifiers` to `"client-mac,client-id"`: RouterOS 7
   fields, returned explicitly.
@@ -357,6 +386,10 @@ HH:MM:SS"`) · `disabled` · `dynamic` · `comment` C · `timeout` C
   `active-server`, `host-name` or `expires-after` keys**.
 - `active-agent-circuit-id`/`active-agent-remote-id` are present and `""`
   even so.
+- **`server` is absent when it is `all`**, not `"all"`, and `?server=all`
+  matches nothing. When the named server is deleted, `server` reads back as
+  the dead server's `.id` (`"*1"`) and `active-server:"*FFFFFFFF"` appears
+  ([write probe 5](#5-hard-and-soft-references)).
 - **A bound or dynamic lease was not observed**: the lab has no DHCP client
   on `ether2`. Its `status` values and `active-*` fields remain unsurveyed.
 
@@ -400,6 +433,143 @@ HH:MM:SS"`) · `disabled` · `dynamic` · `comment` C · `timeout` C
   appear. All three are state and would need stripping if netwatch were
   ever synced.
 
+## Write probes (design questions)
+
+The five probes `docs/design-questions.md` lists under "Needs the lab",
+run on 2026-09-28 against router A of lab instance 1 (see
+[How it was gathered](#how-it-was-gathered)). Each result below is the
+device's own response: status, and the `detail` of a 400, verbatim.
+
+### 1. DNS static record shapes
+
+Each record was created with `PUT /rest/ip/dns/static` and read back. The
+type's value fields are the only ones returned. `ttl` (`"1d"`), `type`,
+`disabled` and `dynamic` are always present, as before.
+
+| `type` | Value field(s) returned | Created with |
+|---|---|---|
+| `A` (default) | `address` | `address` |
+| `AAAA` | `address` | `"type":"AAAA","address":"2001:db8::1"` |
+| `CNAME` | `cname` | `cname` |
+| `MX` | `mx-exchange`, `mx-preference` | `mx-exchange` (+ optional `mx-preference`, which defaults to `"0"` and is then returned) |
+| `SRV` | `srv-target`, `srv-port`, `srv-priority`, `srv-weight` | `srv-target`, `srv-port` (`srv-priority`/`srv-weight` default to `"0"` and are returned) |
+| `TXT` | `text` | `text` |
+| `NS` | `ns` | `ns` |
+| `FWD` | `forward-to` | `forward-to` |
+| `NXDOMAIN` | none | `"type":"NXDOMAIN"` only |
+
+- `add`'s arguments (`/console/inspect`) are exactly `address`,
+  `address-list`, `cname`, `comment`, `copy-from`, `disabled`, `forward-to`,
+  `match-subdomain`, `mx-exchange`, `mx-preference`, `name`, `ns`,
+  `place-before`, `regexp`, `srv-port`, `srv-priority`, `srv-target`,
+  `srv-weight`, `text`, `ttl` and `type`.
+- **A field for another type is dropped or refused, depending on the type.**
+  A `CNAME` sent with an `address` was created, and the `address` silently
+  dropped. An `MX` with only an `address` was `400 "failure: bad MX data"`.
+- **Regexp records have no `name`.** `{"regexp":"rx\\.probe","address":...}`
+  returns `regexp` and `type:"A"` and no `name` key. Sending both `name`
+  and `regexp` is `400 "failure: only name or regexp allowed"`.
+
+### 2. Uniqueness RouterOS enforces
+
+Each probe re-added an existing entry, then varied one field at a time.
+
+| Section | A second **enabled** entry is refused when it matches on | 400 `detail` | Allowed |
+|---|---|---|---|
+| `ip/firewall/address-list` | `list` + `address` (`10.10.10.10/32` counts as `10.10.10.10`) | `failure: already have such entry` | the same pair **disabled**; overlapping prefixes (`10.10.10.0/24` beside `10.10.10.10`). A different comment is still a duplicate, and so is the same pair with a `timeout` |
+| `ip/dhcp-server/network` | `address`, exactly | `failure: such network already exists` | an overlapping network (`192.168.88.0/25` beside `/24`). An address with host bits (`192.168.88.1/24`) is `failure: invalid network` |
+| `ip/dhcp-server/lease` (static) | `mac-address` within one `server` (case-insensitive: `aa` = `AA`); `server=all` clashes with every server, and every server with `all` | `failure: already have static lease for this client` | the same MAC on a **different** named server; the same server+MAC **disabled** |
+| `ip/dhcp-server/lease` (static) | `address`, **across all servers** | `failure: already have static lease with this IP address` | nothing: the same IP on another server was also refused |
+| `ip/dns/static` | `name` + `type` + the whole value (every value field in the table above; tried for `A`, `AAAA`, `CNAME`, `MX`, `SRV`, `TXT`, `FWD` and `NXDOMAIN`, not `NS`) | `failure: entry already exists` | the same record **disabled**; a name differing only in case (`SVC.lab.example`), since `name` is case-sensitive; the same name with another type; two `CNAME`s for one name with different targets; a `CNAME` and an `A` for one name; `MX` differing only in `mx-preference`, `SRV` in any one of `srv-port`/`srv-priority`/`srv-weight`/`srv-target`, `TXT` in case (`a`/`A`) |
+| `ip/dns/static` | (not part of the key) `ttl`, `comment`, `match-subdomain` | `failure: entry already exists` | nothing: changing only these still clashes |
+| `ip/dns/static` (regexp) | `regexp` + `address` | `failure: entry already exists` | |
+| `ip/dhcp-server` | `name` | `failure: server with such name already exists` | |
+
+So on one router the natural keys collide only when **at least one of the
+entries is disabled** (and never for DHCP networks, which cannot be
+disabled).
+
+### 3. `ip/service` and `comment`
+
+`ip/service` does **not** take a `comment` and never returns one.
+
+- `PATCH /rest/ip/service/*0 {"comment":"probe comment"}` is
+  `400 "unknown parameter comment"`, and so is `{"comment":""}`. A GET
+  afterwards has no `comment`.
+- `set`'s arguments (`/console/inspect`) are `address`, `certificate`,
+  `disabled`, `max-sessions`, `numbers`, `port`, `tls-version` and `vrf`:
+  no `comment`.
+- **A PATCH by name is refused differently.** `PATCH /rest/ip/service/ftp`
+  with `comment` is `400 "missing or invalid resource identifier"`, while
+  the same URL with `{"max-sessions":"20"}` succeeds. So the name did
+  resolve, and the misleading `detail` is really the unknown parameter. By
+  contrast `PATCH /rest/user/lab-ro`, `/system/script/lab-hello` and
+  `/ip/dhcp-server/dhcp-lab` with a `comment` all succeed by name. mtha
+  always PATCHes by `.id`, where the error is the plain "unknown parameter".
+
+### 4. The REST `move` command
+
+`move`'s arguments (`/console/inspect`) are `numbers` and `destination`,
+and nothing else.
+
+```
+POST /rest/ip/firewall/filter/move
+{"numbers": "*F", "destination": "*C"}
+-> 200 []
+```
+
+This moves rule `*F` to **immediately before** `*C`.
+
+| Probe | Response | Effect |
+|---|---|---|
+| `numbers` = one `.id`, `destination` = another | `200 []` | moved before `destination`. **The moved rule keeps its `.id`** (`*F` stayed `*F` across every move) |
+| `.id` instead of `numbers` | `200 []` | the same: `.id` is accepted as the key |
+| `numbers` = `"*D,*E"` / `"*E,*D"` | `200 []` | both moved as a block before `destination`, **in the order given** (not table order) |
+| no `destination` | `200 []` | moved to the **end of the whole table**, after every chain |
+| `destination` = an unknown `.id` (`*FFFF`) | **`200 []`** | **moved to the end of the table**, silently, exactly as with no `destination` |
+| `numbers` = an unknown `.id` | `404 {"error":404,"message":"Not Found"}` | nothing |
+| `numbers` = `destination` | `400 "failure: can not move object before itself"` | nothing |
+| `{}` or only `destination` | `400 "missing =.id="` | nothing |
+| `numbers` or `destination` = `"0"` | `200 []` | a bare number is the console's **position** in the whole table: `"numbers":"0"` moved the table's first rule (`input`), and `"destination":"0"` moved a rule to the very top |
+| `numbers` = a comment (`"probe-4"`) | `200 []` | moved the rule carrying that comment. With two rules sharing the comment it picked the first; an unmatched comment is `404` |
+| `destination` in another chain | `200 []` | allowed: the table is one list, and a rule can sit between another chain's rules |
+| `PATCH` with `place-before` | `400 "unknown parameter place-before"` | nothing: `place-before` is create-only, so `move` is the only way to reorder |
+
+The same command exists on `nat` (`POST /rest/ip/firewall/nat/move` with
+an unknown `numbers` is the same `404`).
+
+### 5. Hard and soft references
+
+**Hard**: create refused with a 400 naming the field. **Soft**: accepted,
+and the object is inert until the referent exists.
+
+| Referrer: field = unknown value | Result |
+|---|---|
+| `ip/dhcp-server` `address-pool` = `nosuch-pool` | **Hard.** `400 "input does not match any value of address-pool"` |
+| `ip/dhcp-server` `interface` = `nosuch-if` | **Hard.** `400 "input does not match any value of interface"` |
+| `ip/dhcp-server/lease` `server` = `nosuch-server` | **Hard.** `400 "input does not match any value of server"` |
+| `ip/dhcp-server/lease` `server` = `all` | Accepted: `all` is a value. The lease comes back with **no `server` key**, and a `PATCH` of an existing lease to `server=all` likewise drops the key |
+| `user` `group` = `nosuch-group` | **Hard.** `400 "input does not match any value of group"` |
+| `ip/route` `routing-table` = `nosuch-table` | **Hard.** `400 "input does not match any value of routing-table"` |
+| `ip/route` `gateway` = `nosuch-if` (an interface name) | **Hard.** `400 "invalid or unexpected argument base"` |
+| firewall `in-interface` = `nosuch-if` | **Hard.** `400 "input does not match any value of interface"` |
+| firewall `in-interface-list` = `nosuch-list` | **Hard.** `400 "input does not match any value of interface-list"` |
+| firewall `jump-target` = `nosuch-chain` | **Soft.** Created (`invalid:"true"`, which is not a reliable signal, see firewall) |
+| firewall `src-address-list` = `nosuch-list` | **Soft.** Created (as the fixture already showed) |
+| `system/scheduler` `on-event` = `nosuch-script` | **Soft.** Created |
+
+Deleting a referent that something still names:
+
+| Delete | Result | What the referrer reads afterwards |
+|---|---|---|
+| `ip/dhcp-server` `dhcp-lab`, while static leases name it | **Allowed** (`200`) | each lease's `server` is `"*1"` (the dead server's `.id`), plus `active-server:"*FFFFFFFF"`. **Re-creating a server named `dhcp-lab` does not re-link them**: they still read `"*1"` |
+| `ip/pool` `lab-pool`, while `dhcp-lab` names it | **Allowed** | the server's `address-pool` is `"*1"` |
+| `system/script` `lab-hello`, while `lab-daily` names it in `on-event` | **Allowed** | `on-event` still reads `"lab-hello"`: it is plain text, not a link |
+| `user/group` with a member | **Refused.** `400 "failure: group has some users"` | unchanged |
+
+So the create-time check is by name and strict, while the delete-time
+check mostly isn't: the link is stored by `.id` and left dangling.
+
 ## Errors
 
 | Case | Status | Body |
@@ -415,7 +585,8 @@ Error bodies are JSON with `error` (number, the one non-string value in the
 whole API), `message` and, on 400, usually `detail`. The `detail` is the
 useful part.
 
-Two write-side errors are known from earlier work, not from this survey:
+Write-side errors known from earlier work (the write probes add many more,
+listed with each probe under [Write probes](#write-probes-design-questions)):
 
 - `PUT /interface/vrrp` with `address` returns
   `400 {"detail":"unknown parameter address",...}`.
@@ -633,6 +804,28 @@ assumes and what the device actually does.
       no `disabled` key), which is fine only while callers compare with
       `"true"`.
 
+16. **The identity and reference code predates the write probes.** Each
+    point says what the code does and what the device does (see
+    [Write probes](#write-probes-design-questions)); none is fixed here.
+    - `internal/model/identity.go` `dnsValueFields` knows only `A` and
+      `CNAME`, so every other type is identified `name|type`. Two `MX`,
+      `TXT`, `SRV`, `FWD` or `AAAA` records under one name therefore pair
+      by occurrence, although the device has a value for each (probe 1).
+      A regexp record has no `name` at all and is identified `|A|<address>`.
+    - Leases: `server|mac-address` reads a missing `server` as `""`, which
+      is what a `server=all` lease looks like. A lease whose server was
+      deleted reads `server:"*1"`, so it is identified `*1|<mac>` and shows
+      as a remove plus an add against the peer's `dhcp-lab|<mac>`, not as a
+      `server` change.
+    - `internal/plan/references.go` warns, and its comment says which
+      references RouterOS rejects "is not yet surveyed". It is now (probe 5):
+      a missing pool, interface, interface list, server, group or routing
+      table is a certain 400, so that op will stop the apply partway; only
+      address lists, jump targets and scheduler scripts are soft.
+    - `internal/plan/plan.go` skips order hunks with "move is not
+      implemented", pending the lab. The `move` body and `.id` behaviour
+      are now known (probe 4).
+
 Things the code assumes that this survey **confirms**:
 
 - All values are strings. `model.Entry` stays `map[string]any` and every
@@ -681,7 +874,10 @@ answered are marked.
 - **The write schema.** Which fields the planner and Runtime send that
   RouterOS rejects (beyond `address` on `interface/vrrp`), which read-only
   fields a `PATCH` would echo back as errors, and which other writes return
-  400 but still apply. Not surveyed.
+  400 but still apply. *Partly answered* by the write probes: `comment` on
+  `ip/service` and `place-before` in a `PATCH` are rejected, the `move`
+  body is known, and the 400s for unknown references and duplicates are
+  listed. The rest is not surveyed.
 - **Whether disabling `reverse-proxy` severs REST.** See contradiction 3.
   Not surveyed; the connection rows' naming now makes it less pressing but
   not settled.
