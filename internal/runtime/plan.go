@@ -239,6 +239,13 @@ func netwatchOp(target, router string, rt config.RuntimeConfig) Op {
 
 // schedulerOp is the single periodic-export job (project.md §5.5); its
 // interval is a fixed v1 default rather than a config knob.
+//
+// start-date and start-time are pinned because RouterOS fills in whichever
+// is left out from its own clock when the create lands, and
+// system/scheduler is a synced section: two routers created a second (or a
+// midnight) apart would differ for good, drift of mtha's own making that
+// keeps the pair from ever being Ready. The date is only an anchor in the
+// past; the job runs daily at the start-time.
 func schedulerOp() Op {
 	return Op{
 		Section:    "system/scheduler",
@@ -247,10 +254,12 @@ func schedulerOp() Op {
 		Unique:     "name",
 		Label:      "scheduler mtha-snapshot",
 		Fields: map[string]string{
-			"name":     "mtha-snapshot",
-			"interval": "1d",
-			"on-event": "/export file=mtha-snapshot.rsc",
-			"comment":  "mtha:scheduler:snapshot",
+			"name":       "mtha-snapshot",
+			"start-date": "2000-01-01",
+			"start-time": "03:00:00",
+			"interval":   "1d",
+			"on-event":   "/export file=mtha-snapshot.rsc",
+			"comment":    "mtha:scheduler:snapshot",
 		},
 	}
 }

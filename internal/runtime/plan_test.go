@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -94,6 +95,26 @@ func TestBuildPlanFullInstanceProducesExpectedOps(t *testing.T) {
 	}
 	if !strings.HasPrefix(aVRRP.Fields["on-master"], onMasterMarker("vrrp-lan")) {
 		t.Errorf("on-master = %q, want it to start with the marker", aVRRP.Fields["on-master"])
+	}
+}
+
+// RouterOS stamps a scheduler's start-date and start-time from its own clock
+// when a create leaves them out, so the two routers would disagree in a
+// synced section; the Op must pin both, identically for both routers.
+func TestBuildPlanSchedulerStartIsPinned(t *testing.T) {
+	plans, err := BuildPlan(&config.Pair{Runtime: testRuntimeConfig()})
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	a := findOp(t, plans["a"].Ops, "system/scheduler")
+	b := findOp(t, plans["b"].Ops, "system/scheduler")
+	for _, field := range []string{"start-date", "start-time"} {
+		if a.Fields[field] == "" || a.Fields[field] == "startup" {
+			t.Errorf("scheduler %s = %q, want a fixed value", field, a.Fields[field])
+		}
+	}
+	if !reflect.DeepEqual(a.Fields, b.Fields) {
+		t.Errorf("scheduler fields differ between routers: a %v, b %v", a.Fields, b.Fields)
 	}
 }
 

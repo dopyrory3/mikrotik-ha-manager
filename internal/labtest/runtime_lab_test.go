@@ -231,6 +231,50 @@ func TestLabRuntimeDeployCreatesTaggedObjects(t *testing.T) {
 	requireRuntimeStates(t, lab, plans, runtime.StateOK)
 }
 
+// The snapshot scheduler is in a synced section, so what a deploy creates
+// must be the same entry on both routers however far apart the two creates
+// land: a field the device fills in from its clock at creation (start-date,
+// start-time) would differ between them for good, and that drift is mtha's
+// own doing and keeps a healthy pair from ever being Ready. Router b's
+// create is held back here until the clocks have moved on a second.
+func TestLabRuntimeDeployLeavesSchedulerClean(t *testing.T) {
+	lab := labtest.New(t)
+	plans := buildRuntime(t, runtimePair(lab, []string{rtTargetA}, config.TogglesConfig{}))
+
+	p := runtimeWrites(t, lab, plans, runtime.ActionDeploy)
+	created := map[string]bool{}
+	for _, op := range p.Ops {
+		if op.Section == "system/scheduler" {
+			if op.Method != plan.MethodCreate {
+				t.Fatalf("deploy plans %s for the scheduler on router %s, want a create:%s", op.Method, op.Router, describePlan(p))
+			}
+			if op.Router == "b" {
+				if !created["a"] {
+					t.Fatalf("router b's scheduler create comes before router a's:%s", describePlan(p))
+				}
+				time.Sleep(1500 * time.Millisecond)
+			}
+			created[op.Router] = true
+		}
+		if err := plan.Execute(context.Background(), lab.Client(op.Router), op); err != nil {
+			t.Fatalf("%s %s %v: %v", op.Method, op.Path, op.Body, err)
+		}
+	}
+	if !created["a"] || !created["b"] {
+		t.Fatalf("deploy did not create the scheduler on both routers:%s", describePlan(p))
+	}
+	requireRuntimeStates(t, lab, plans, runtime.StateOK)
+
+	a := only(t, lab.A, "system/scheduler", byName("mtha-snapshot"))
+	b := only(t, lab.B, "system/scheduler", byName("mtha-snapshot"))
+	for _, field := range []string{"start-date", "start-time", "interval"} {
+		if a[field] == "" || a[field] != b[field] {
+			t.Errorf("mtha-snapshot %s is %q on router a and %q on router b, want one value on both", field, a[field], b[field])
+		}
+	}
+	requireClean(t, lab, "system/scheduler")
+}
+
 // A hand-written on-master on the managed interface is someone's script:
 // verify reports the interface as a conflict on that router only, and a
 // deploy leaves the script alone (saying so) rather than restoring mtha's.
