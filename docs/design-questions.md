@@ -34,7 +34,7 @@ ip/dns/static, ip/route, ip/service, user, system/script, system/scheduler
 |---|---|---|---|
 | 1 | Custom identity rules | Keep comment-first **only** where there is no natural key (firewall rules, tagged routes). Everywhere else identify by the natural key and treat `comment` as an ordinary compared field. Specifically: `ip/dns/static` gets `name\|type\|value`, which removes its bare ordinal. *Lab:* the value is known for every type (a per-type field list), and a regexp record keys on `regexp`. | *Answered.* Every DNS type's value fields are known. RouterOS refuses duplicate **enabled** natural keys in every section asked about, so occurrence pairing is only reached through disabled duplicates. `ip/service` has no `comment`. |
 | 2 | Rule order drift | **Detect it now**, per chain, over rules present on both routers; show it as one order hunk per chain. **Plan `move`** with `POST .../move {"numbers","destination"}`. *Lab:* this is no longer blocked. | *Answered.* The body is known, and a moved rule keeps its `.id`. An unknown `destination` silently moves the rule to the end of the table, which the planner must guard against. |
-| 3 | Cross-section dependencies | **Check, not reorder.** A small static table of reference fields, checked at plan time against the target (plus objects created earlier in the same plan). No dependency graph. *Lab:* a missing **hard** referent should be a refusal (skip with a reason); only **soft** ones stay warnings. Deletes need their own check, because RouterOS lets a referent be deleted and leaves the referrer dangling. | *Answered.* Pool, interface, interface list, lease server, user group and routing table are hard; address list, jump target and scheduler script are soft. Deleting a DHCP server or pool under a referrer is allowed, and the referrer is left holding a dead `.id`. |
+| 3 | Cross-section dependencies | **Warning-only.** Keep the existing warning behaviour for missing references and dangling references after deletes. Do not refuse an operation solely because it may leave a dangling reference. | *Decided by the maintainer (Rory).* A dangling reference alone is not worth blocking an operation; the operator can decide whether to proceed. Probe evidence informs warnings, not refusals. |
 
 ---
 
@@ -384,31 +384,20 @@ What this shows:
   `scheduler` before `script`). Cheap, and it covers the create-order half
   of C for free.
 
-### Recommendation: B, split by hardness, plus a delete check, plus D
+### Decision: warning-only
 
-*Lab (probe 5) changes B.* The check stays, but what it produces depends on
-the reference:
+The maintainer (Rory) overruled the probe-based proposal to refuse hard
+references and add a delete-side check. An operation is not worth blocking
+merely because it may leave a dangling reference; the operator can decide
+whether to proceed. The existing warning behaviour stands for missing and
+dangling references, including references that RouterOS may reject and those
+it accepts but leaves inert. Probe results remain evidence about RouterOS
+behaviour, not grounds for changing the warning into a refusal.
 
-- **Hard references become refusals.** A create or `PATCH` naming a
-  missing pool, interface, interface list, lease server, user group or
-  routing table (or a gateway naming a missing interface) is skipped with a
-  reason, like an unsafe hunk. RouterOS would refuse it with a 400 anyway.
-  Refusing it at plan time keeps the rest of the plan from running up to
-  it and stopping there.
-- **Soft references stay warnings**: address lists, jump targets (still
-  left out of the table, for the reason in `references.go`) and scheduler
-  scripts. The device accepts these and the object sits inert.
-- **Add a delete-side check.** Warn when the plan deletes a DHCP server or
-  pool that an entry staying on the target still names. RouterOS allows
-  the delete and leaves that entry holding a dead `.id` for good. A
-  refusal would be too strong here, since the operator may mean to follow
-  up by hand.
-
-D stops a pair file from breaking create order. **Drop C**: the lab found
-the broken delete case the recommendation was waiting for, and it is not
-an ordering problem. RouterOS neither rejects the delete nor cascades it,
-and running lease deletes first changes nothing for leases the plan keeps.
-The delete-side check above is the guard for it.
+There is no additional delete-side check in this decision. The probe confirmed
+that RouterOS can leave an existing referrer pointing at a deleted DHCP
+server or pool; where the existing warning pass detects this, it should be
+reported as a warning.
 
 Independently of this decision: listing `ip/firewall/address-list` before
 `filter`/`nat` in the sample would close the fail-open window above. That
@@ -446,8 +435,9 @@ In short:
    list, lease server, group and routing table are hard (400); `all` is a
    valid lease server; jump target, address list and scheduler script are
    soft. Deleting a DHCP server under its leases is allowed, and they are
-   left on a dead `.id`. (Q3: **changes** warnings to refusals for hard
-   references, adds a delete-side check, and drops C.)
+   left on a dead `.id`. The maintainer's decision is **warning-only**: keep
+   warning behaviour for missing or dangling references; do not refuse an
+   operation solely for that reason.
 
 ## Tests added with this page
 
