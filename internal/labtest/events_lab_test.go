@@ -230,7 +230,7 @@ func TestLabEventsClockSkew(t *testing.T) {
 		t.Errorf("timeline order (newest first) puts line 3 at %d, 2 at %d, 1 at %d; want 3, 2, 1:\n%s", i3, i2, i1, v)
 	}
 
-	lineA, lineB := routerLine(v, "A"), routerLine(v, "B")
+	lineA, lineB := eventsRouterLine(v, "A"), eventsRouterLine(v, "B")
 	m := skewWarning.FindStringSubmatch(lineB)
 	if m == nil {
 		t.Fatalf("router b's line does not warn of its clock: %q", lineB)
@@ -247,8 +247,8 @@ func TestLabEventsClockSkew(t *testing.T) {
 
 var skewWarning = regexp.MustCompile(`clock (\S+) ahead of this machine \(timeline corrected\)`)
 
-// routerLine is the Events screen's summary line for router src.
-func routerLine(screen, src string) string {
+// eventsRouterLine is the Events screen's summary line for router src.
+func eventsRouterLine(screen, src string) string {
 	for _, l := range strings.Split(screen, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(l), "Router "+src+": ") {
 			return strings.TrimSpace(l)
