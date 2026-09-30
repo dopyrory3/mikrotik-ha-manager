@@ -105,18 +105,74 @@ func TestLabReadinessDrift(t *testing.T) {
 // Two masters for one VRRP instance — split brain, forced by dropping VRRP
 // adverts on router b so it no longer hears router a — fail the VRRP check.
 // Letting the adverts through again hands mastership back to a.
+//
+// The lab's netwatch targets are the routers' own ether2 addresses, on the
+// VIP's subnet. In split brain both routers hold the VIP, so each has two
+// connected routes to 192.168.88.0/24, and a probe of the peer that leaves by
+// vrrp-lan carries the VIP as its source — which the peer, holding it too,
+// answers locally. About half the probes are lost that way, so whether a
+// netwatch goes down in any one interval is chance; when it does, its
+// down-script lowers the priority, which restarts VRRP and drops that router
+// to backup, and the up-script's restore restarts it again. The pair then
+// flaps under the test instead of holding two masters. Pinning each router's
+// probe of its peer to ether2 keeps netwatch out of it, so this test turns
+// only the VRRP check red, and the hold below proves the scripts stay quiet
+// for a whole netwatch interval.
 func TestLabReadinessTwoMasters(t *testing.T) {
 	s := readyPair(t)
+	pins := map[*routeros.Client]string{}
+	for _, p := range []struct {
+		c         *routeros.Client
+		own, peer string
+	}{{s.lab.A, "192.168.88.2", "192.168.88.3"}, {s.lab.B, "192.168.88.3", "192.168.88.2"}} {
+		pins[p.c] = add(t, p.c, "ip/route", map[string]string{
+			"dst-address": p.peer + "/32", "gateway": "ether2", "pref-src": p.own, "comment": "mtha-lab-pin-peer",
+		})
+	}
 	id := add(t, s.lab.B, "ip/firewall/raw", map[string]string{
 		"chain": "prerouting", "action": "drop", "protocol": "vrrp", "in-interface": "ether2", "comment": "mtha-lab-split-brain",
 	})
 	waitRole(t, s.lab.B, routeros.RoleMaster)
 	s.requireRoles("master", "master", pollWait)
 	s.requireReadiness(wantReadiness("Degraded", map[string]string{checkMaster: ""}), pollWait)
+	holds(t, "both masters at base priority, netwatch up", netwatchInterval+2*time.Second, func() error {
+		for _, r := range []struct {
+			c        *routeros.Client
+			priority int
+		}{{s.lab.A, s.lab.Pair.Runtime.PriorityMaster}, {s.lab.B, s.lab.Pair.Runtime.PriorityBackup}} {
+			v := onlyVRRP(t, r.c)
+			if v.Role() != routeros.RoleMaster || v.Priority != strconv.Itoa(r.priority) {
+				return fmt.Errorf("VRRP %+v, want master at priority %d", v, r.priority)
+			}
+			for _, host := range []string{"192.168.88.2", "192.168.88.3"} {
+				if err := netwatchStatus(r.c, host, "up"); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
 
 	remove(t, s.lab.B, "ip/firewall/raw", id)
 	s.requireRoles("master", "backup", pollWait)
+	for c, pin := range pins {
+		remove(t, c, "ip/route", pin)
+	}
 	s.requireReady(pollWait)
+}
+
+// netwatchInterval is the probe interval internal/runtime deploys on every
+// netwatch entry.
+const netwatchInterval = 10 * time.Second
+
+// holds fails t unless fn succeeds on every check, twice a second, for d.
+func holds(t *testing.T, what string, d time.Duration, fn func() error) {
+	t.Helper()
+	for end := time.Now().Add(d); time.Now().Before(end); time.Sleep(500 * time.Millisecond) {
+		if err := fn(); err != nil {
+			t.Fatalf("%s did not hold for %s: %v", what, d, err)
+		}
+	}
 }
 
 // Runtime logic missing from one router fails the runtime check once it is
