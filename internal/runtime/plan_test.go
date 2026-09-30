@@ -244,7 +244,7 @@ func TestBuildPlanNetwatchScriptsArePerRouter(t *testing.T) {
 
 	const (
 		managed = `[/interface/vrrp find where comment~"^mtha:vrrp:"]`
-		allUp   = `:if ([/tool/netwatch print count-only where comment~"^mtha:netwatch:" disabled=no status=down] = 0) do=`
+		allUp   = `:if ([/tool/netwatch print count-only where comment~"^mtha:netwatch:" status=down] = 0) do=`
 	)
 	wantUp := map[string]string{"a": "priority=200", "b": "priority=100"}
 	for _, router := range routers {
@@ -265,6 +265,11 @@ func TestBuildPlanNetwatchScriptsArePerRouter(t *testing.T) {
 			}
 			if !strings.Contains(up, allUp) {
 				t.Errorf("router %s %s up-script = %q, want it gated on every mtha netwatch being up", router, target, up)
+			}
+			// Issue #26: an enabled netwatch entry has no disabled property
+			// on RouterOS 7.23.7, so a disabled= term makes the count 0.
+			if strings.Contains(up, "disabled") {
+				t.Errorf("router %s %s up-script = %q, want its down-count not to filter on disabled", router, target, up)
 			}
 			if !strings.Contains(down, "priority=50}") || strings.Count(down, "priority=") != 1 {
 				t.Errorf("router %s %s down-script = %q, want priority_degraded (50)", router, target, down)

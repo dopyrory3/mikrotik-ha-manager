@@ -68,9 +68,15 @@ func quote(v string) string {
 // "mtha:vrrp:<name>", see vrrpTag), never hand-made ones. project.md §5.5:
 // "raise/lower VRRP priority (priority_master <-> priority_degraded)", per
 // router — the standby is restored to priority_backup, not promoted.
+//
+// netwatchDownAny filters on status alone. A disabled entry is never
+// probed and reports "unknown" (disabling one that is down resets it), so
+// status=down already means enabled-and-down. It must not also say
+// disabled=no: on RouterOS 7.23.7 an enabled netwatch entry has no disabled
+// property, so that matches nothing and the count is always 0 (issue #26).
 const (
 	managedVRRP     = `/interface/vrrp find where comment~"^mtha:vrrp:"`
-	netwatchDownAny = `/tool/netwatch print count-only where comment~"^mtha:netwatch:" disabled=no status=down`
+	netwatchDownAny = `/tool/netwatch print count-only where comment~"^mtha:netwatch:" status=down`
 )
 
 // netwatchDownScript lowers the router's managed VRRP interfaces to the
@@ -81,7 +87,7 @@ func netwatchDownScript(target string, degraded int) string {
 }
 
 // netwatchUpScript restores the router's base priority, but only when no
-// enabled mtha netwatch entry is still down: each target's up-script runs
+// mtha netwatch entry is still down: each target's up-script runs
 // independently, and must not undo another target's down-script.
 func netwatchUpScript(target string, base int) string {
 	return fmt.Sprintf("%s\n:if ([%s] = 0) do={:foreach i in=[%s] do={/interface/vrrp set $i priority=%d}}",
