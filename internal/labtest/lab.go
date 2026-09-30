@@ -656,8 +656,20 @@ func waitBaseline(password string) error {
 
 // checkBaseline compares one router with what provision.sh establishes: its
 // ether2 address, vrrp-lan with its priority, the VIP on vrrp-lan, the VRRP
-// role that priority wins, and the fixture's entry counts.
+// role that priority wins, and the fixture's entry counts — and with how the
+// image bootstraps www-ssl: on the guest's 443, serving the certificate
+// named "lab". Tests move both, and the pair exempts both, so a router left
+// that way reads clean; unchecked, setup would save it as the golden backup
+// and every test planning ip/service without the exemptions would see it.
 func checkBaseline(ctx context.Context, c *routeros.Client, r router) error {
+	var www []map[string]string
+	if err := c.Get(ctx, "/ip/service?name=www-ssl&dynamic=false", &www); err != nil {
+		return fmt.Errorf("router %s: %w", r.key, err)
+	}
+	if len(www) != 1 || www[0]["port"] != "443" || www[0]["certificate"] != "lab" || www[0]["disabled"] == "true" {
+		return fmt.Errorf("router %s: www-ssl %v, want it enabled on port 443 with certificate lab", r.key, www)
+	}
+
 	for section, want := range fixtureCounts {
 		var entries []map[string]string
 		if err := c.Get(ctx, "/"+section, &entries); err != nil {
