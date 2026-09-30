@@ -24,5 +24,10 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # The lab tests are behind the `lab` build tag, so nothing else here
+      # compiles them. Vetting with the tag needs no lab.
+      - name: Vet lab tests
+        run: go vet -tags lab ./...
+
       - name: Test
         run: go test -race ./...
