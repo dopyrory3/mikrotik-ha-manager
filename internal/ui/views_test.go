@@ -257,14 +257,14 @@ func TestRenderApplyResultSync(t *testing.T) {
 		},
 	}
 
-	out := strings.Join(renderApplyResult(a), "\n")
+	out := strings.Join(renderApplyResult(a, 0), "\n")
 	wantLines(t, out, "applied 4/4 op(s)", "ip/firewall/filter", "clean", "1 residual", "nas.lan", "user", "not verified", "residual differences remain")
 
 	a.status = []opStatus{opDone, opFailed, opPending, opPending}
 	a.err = errors.New("PUT /ip/firewall/filter: 500")
 	a.verifyErr = errors.New("fetch user: timeout")
 	a.residual = map[string]diff.SectionDiff{}
-	out = strings.Join(renderApplyResult(a), "\n")
+	out = strings.Join(renderApplyResult(a, 0), "\n")
 	wantLines(t, out, "apply stopped after 1/4 op(s): PUT /ip/firewall/filter: 500", "verify error: fetch user: timeout")
 	rejectLines(t, out, "residual differences remain")
 }
@@ -316,7 +316,7 @@ func TestRenderRuntimeVerify(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out := strings.Join(renderRuntimeVerify(applyState{kind: tt.kind, runtimeStatus: tt.status, verifyErr: tt.verifyErr}), "\n")
+			out := strings.Join(renderRuntimeVerify(applyState{kind: tt.kind, runtimeStatus: tt.status, verifyErr: tt.verifyErr}, 0), "\n")
 			wantLines(t, out, tt.want...)
 			rejectLines(t, out, tt.reject...)
 		})
