@@ -385,8 +385,8 @@ func routeTable(t *testing.T, c *routeros.Client) map[string]string {
 // A permutation of commented rules — every identity still matching — was
 // invisible to the diff when the issue was written. Order detection
 // (docs/design-questions.md §2) now reports it as one order finding for the
-// chain, with no hunks, and the planner skips it with a reason instead of
-// writing anything.
+// chain, with no hunks, and the planner plans it as moves — nothing else,
+// and no skip (TestLabRuleOrderMoveApplied applies one).
 func TestLabIdentityReorderIsAnOrderFinding(t *testing.T) {
 	lab := labtest.New(t)
 	ctx := context.Background()
@@ -410,13 +410,15 @@ func TestLabIdentityReorderIsAnOrderFinding(t *testing.T) {
 	requireHunks(t, d, "order input: 1 of 5 moved: lab: allow ssh")
 
 	p := buildPlan(t, lab, filter, map[plan.HunkRef]plan.Direction{plan.OrderRef(d.Order[0]): plan.AtoB})
-	if !p.Empty() {
-		t.Fatalf("an order finding planned writes: %s", describePlan(p))
+	if len(p.Skipped) != 0 || p.Empty() {
+		t.Fatalf("want the input order finding planned, got %s", describePlan(p))
 	}
-	if len(p.Skipped) != 1 || p.Skipped[0].Ref.Chain != "input" || !strings.Contains(p.Skipped[0].Reason, "move is not implemented") {
-		t.Fatalf("want the input order finding skipped with a reason, got %s", describePlan(p))
+	for _, op := range p.Ops {
+		if op.Section != "" && (op.Router != "b" || op.Path != "/"+filter+"/move") {
+			t.Fatalf("an order finding planned %s %s on router %s: %s", op.Method, op.Path, op.Router, describePlan(p))
+		}
 	}
-	t.Logf("skipped: %s: %s", p.Skipped[0].Where(), p.Skipped[0].Reason)
+	t.Logf("planned: %s", describePlan(p))
 }
 
 // requireHunks fails unless d's findings are exactly want, each written

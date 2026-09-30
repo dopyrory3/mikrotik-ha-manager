@@ -1,0 +1,11 @@
+router B:
+  1. POST /system/backup/save {"name":"bk"}
+       pre-apply backup of router b
+  2. POST /ip/firewall/filter/move {"destination":"*10","numbers":"*B"}
+       move drop-subnet before drop-rest, to match chain forward's order on router a; chain forward is in neither router's order until the last of these 3 moves
+  3. POST /ip/firewall/filter/move {"destination":"*10","numbers":"*D"}
+       move last before drop-rest, to match chain forward's order on router a
+  4. POST /ip/firewall/filter/move {"destination":"*D","numbers":"*10"}
+       move drop-rest before last, to match chain forward's order on router a
+  5. PUT /ip/firewall/filter {"action":"accept","chain":"forward","comment":"new-rule","place-before":"*D"}
+       create new-rule (from router a), placed before last

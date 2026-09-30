@@ -292,12 +292,15 @@ the standby's policy starts to matter. Detection is pure code with no
 device risk.
 
 Planning the move: **yes, but second.** *Lab:* the REST call is confirmed
-(above), so nothing blocks building it now. Until it is built, an order
-finding is shown and, if selected, skipped with a reason ("reorder this
-chain by hand; move is not implemented"), the same way unsafe hunks are
-skipped today. Delete-and-recreate is not an
-acceptable stand-in: it leaves a window with the rule missing, resets its
-counters and changes its `.id`.
+(above). **Built** (`internal/plan/move.go`, project.md §10.1): a selected
+order finding plans one `move` per rule, deletes, updates, moves, creates,
+anchored as above. Moved rules after the last rule in order go before it,
+and it then goes before them, so no move is sent without a destination.
+Against the stale anchor, the plan checks every `.id` against the target's
+read and replays the moves on it; a chain that fails is skipped with the
+reason ("… not moved: …. Reorder this chain by hand"), never moved to the
+end. Delete-and-recreate is not an acceptable stand-in: it leaves a window
+with the rule missing, resets its counters and changes its `.id`.
 
 ---
 

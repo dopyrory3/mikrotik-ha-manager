@@ -12,7 +12,8 @@
 //     the plan writes to;
 //   - then, per section in the order given: deletes, then updates (PATCH for
 //     changed fields, POST …/unset for fields the source doesn't set), then
-//     creates (PUT, RouterOS REST's "add") in source order;
+//     moves (POST …/move, reordering a firewall chain), then creates (PUT,
+//     RouterOS REST's "add") in source order;
 //   - creates into firewall rule lists carry place-before, anchored to the
 //     next rule in the same chain on the source that already exists on the
 //     target, so the rule lands in the same relative position (§5.4).
@@ -26,9 +27,15 @@
 // removing the user it logs in as) are skipped with a reason too.
 //
 // A selected order finding (a firewall chain whose shared rules are in a
-// different order, docs/design-questions.md §2) is skipped with a reason
-// too: RouterOS's move command is not yet planned, and deleting and
-// re-creating rules to reorder them is not an acceptable stand-in.
+// different order, docs/design-questions.md §2) plans RouterOS moves on the
+// target, never a delete and re-create: each moved rule goes before the
+// next rule, in source order, that is already in order on both routers, by
+// the ".id"s read from the target (a move keeps the moved rule's ".id").
+// RouterOS silently moves a rule to the end of the table when the
+// destination is unknown, so every move names one, every ".id" is checked
+// against the target's read, and the moves are replayed on that read; a
+// chain that fails any of it is skipped whole with the reason (see
+// move.go).
 //
 // Build does not reorder across sections: sections run in the order
 // given. Instead, every create or PATCH body that names an object in
