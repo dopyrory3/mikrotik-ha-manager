@@ -307,25 +307,6 @@ func skipNetwatchStartupDelay(t *testing.T, lab *labtest.Lab) {
 	}
 }
 
-// alignSnapshotScheduler works around a known issue in the runtime deploy so
-// the rest of the readiness suite can reach Ready at all. The deploy creates
-// the mtha-snapshot scheduler without a start-time, so each router stamps it
-// with its own clock at creation; when router b's create lands in a later
-// second than router a's, system/scheduler (a synced section) drifts and the
-// pair can never be Ready. It is logged whenever it happens, and b's copy is
-// then aligned with a's, which is what syncing it a→b would do.
-func alignSnapshotScheduler(t *testing.T, lab *labtest.Lab) {
-	t.Helper()
-	a := only(t, lab.A, "system/scheduler", byName("mtha-snapshot"))
-	b := only(t, lab.B, "system/scheduler", byName("mtha-snapshot"))
-	if a["start-date"] == b["start-date"] && a["start-time"] == b["start-time"] {
-		return
-	}
-	t.Logf("KNOWN ISSUE: runtime deploy left mtha-snapshot drifting (start %s %s on a, %s %s on b); aligning b with a",
-		a["start-date"], a["start-time"], b["start-date"], b["start-time"])
-	patch(t, lab.B, "system/scheduler", b[".id"], map[string]string{"start-date": a["start-date"], "start-time": a["start-time"]})
-}
-
 // readyPair is a lab pair taken to the fully green state only a live pair can
 // produce: both routers reachable on one version, drift fetched and clean,
 // mtha's runtime deployed and verified on both, and every netwatch target
@@ -338,7 +319,6 @@ func readyPair(t *testing.T) *session {
 	s := startSession(t, lab)
 	s.deployRuntime()
 	skipNetwatchStartupDelay(t, lab)
-	alignSnapshotScheduler(t, lab)
 	s.fetchDrift()
 	// The deploy restarts vrrp-lan on both routers (it sets on-master and
 	// on-backup), so a re-election follows it.
