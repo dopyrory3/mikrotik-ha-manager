@@ -1,4 +1,4 @@
-.PHONY: test test-race test-lab vet vet-lab cover check build
+.PHONY: test test-race test-lab test-lab-parallel vet vet-lab cover check build
 
 # The gate to run before every commit: unit tests plus the static checks CI
 # runs. Keeps local and CI behaviour identical.
@@ -21,8 +21,24 @@ test-race:
 # A full run takes about 37 minutes (76 tests, each resetting the pair to
 # baseline in ~20s), so the timeout is 60m: Go's default and the old 30m both
 # kill the run partway through.
+LAB_TEST_FLAGS = -tags lab -race -count=1 -p 1 -timeout 60m
+
 test-lab:
-	MTHA_LAB=1 go test -tags lab -race -count=1 -p 1 -timeout 60m -v -run '^TestLab' ./...
+	MTHA_LAB=1 go test $(LAB_TEST_FLAGS) -v -run '^TestLab' ./...
+
+# The same suite split across several lab instances at once, one shard per
+# instance, each instance already up (./testlab/lab.sh up N for each). It
+# fails if any shard fails or if the shards did not between them run every
+# listed test exactly once; see testlab/shard.sh. An accelerator: test-lab
+# stays the authority. Four is the default because the README's measurements
+# show four concurrent suites cost nothing (resets 16-19s against 15-17s
+# alone) while six to eight saturate the host; count any other suites
+# already running on this host towards that four. Pick instances with
+#   make test-lab-parallel LAB_INSTANCES="4 5 6 7"
+LAB_INSTANCES ?= 1 2 3 4
+
+test-lab-parallel:
+	LAB_TEST_FLAGS="$(LAB_TEST_FLAGS)" sh testlab/shard.sh $(LAB_INSTANCES)
 
 vet:
 	go vet ./...
