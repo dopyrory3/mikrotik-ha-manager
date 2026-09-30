@@ -10,15 +10,12 @@ import (
 	"mtha/internal/plan"
 )
 
-// Syncing a field back to its default. plan.updateOps turns a field the
-// source leaves at default into POST /<section>/unset, but RouterOS 7.23.7
-// refuses unset for a firewall rule's disabled and log ("input does not
-// match any value of value-name", 400), where PATCHing the default
-// ("disabled": "false") is accepted. So re-enabling a rule, or turning its
-// logging off, to match the other router fails mid-apply.
-//
-// Found while writing the identity tests (issue #12). It fails today, on
-// purpose: it is a planner bug, not an identity one, and is left for a fix.
+// Syncing a yes/no field back to its default. RouterOS 7.23.7 refuses both
+// the unset command and "" for a firewall rule's disabled and log ("input
+// does not match any value of value-name", "must be either yes or no",
+// 400); PATCHing the default ("disabled": "false") is accepted, so that is
+// what plan.updateOps sends to re-enable a rule or turn its logging off
+// (issue #25).
 func TestLabSyncFieldBackToDefault(t *testing.T) {
 	lab := labtest.New(t)
 	ctx := context.Background()

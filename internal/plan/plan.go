@@ -486,18 +486,56 @@ func isAPIUser(tgt row, target string, users map[string]string) bool {
 	return name != "" && name == users[target]
 }
 
-// updateOps makes the target entry match the source: one PATCH setting every
-// field the source has a value for, then one unset per field the source
-// leaves at default (absent or empty), since PATCHing "" isn't valid for
-// every RouterOS property but unset is.
+// firewallTextFields are the properties of a firewall rule that are free
+// text rather than a matcher or an action parameter. They are reset like
+// any other section's fields, by PATCHing "", and the rule list's unset
+// command refuses them.
+var firewallTextFields = map[string]bool{
+	"comment":    true,
+	"log-prefix": true,
+}
+
+// resetValue says how to put field back to its default on the target, for a
+// field the source leaves there (absent or empty). No one mechanism works
+// for every RouterOS property (probed on 7.23.7, docs/lab-rest-contract.md):
+//
+//   - a yes/no property (disabled, log, block-access, ...) takes neither ""
+//     nor unset; it is PATCHed to "false". Only "true" differs from an
+//     absent field, so that is the only value it can be reset from.
+//   - a firewall rule's matchers and action parameters (src-address,
+//     in-interface, to-ports, ...) are cleared by the rule list's unset
+//     command; "" is not a value most of them parse. unset is false for
+//     these and the caller plans the command.
+//   - everything else (comment, log-prefix, a lease's address-lists, a
+//     script's or scheduler's fields, ...) is PATCHed to "". Sections other
+//     than the firewall rule lists either have no unset command at all
+//     (system/script) or one that refuses these fields.
+func resetValue(section, field string, tgt row) (value string, patch bool) {
+	switch {
+	case stringOf(tgt.norm[field]) == "true":
+		return "false", true
+	case model.IsFirewallSection(section) && !firewallTextFields[field]:
+		return "", false
+	default:
+		return "", true
+	}
+}
+
+// updateOps makes the target entry match the source: one PATCH carrying
+// every field the source has a value for and every field it leaves at
+// default that a PATCH can reset, then one unset per remaining default
+// field (see resetValue).
 func updateOps(section, target string, ref HunkRef, changes []model.FieldChange, src, tgt row, dir Direction) []Op {
 	id := idOf(tgt.raw)
 	set := map[string]string{}
-	var unset []string
+	var reset, unset []string
 	for _, ch := range changes {
 		v, present := src.norm[ch.Field]
 		if s := stringOf(v); present && s != "" {
 			set[ch.Field] = s
+		} else if value, patch := resetValue(section, ch.Field, tgt); patch {
+			set[ch.Field] = value
+			reset = append(reset, ch.Field)
 		} else {
 			unset = append(unset, ch.Field)
 		}
@@ -505,10 +543,16 @@ func updateOps(section, target string, ref HunkRef, changes []model.FieldChange,
 
 	var ops []Op
 	if len(set) > 0 {
+		note := fmt.Sprintf("update %s to match router %s", ref, dir.Source())
+		if len(reset) == len(set) {
+			note = fmt.Sprintf("reset %s on %s (default on router %s)", strings.Join(reset, ", "), ref, dir.Source())
+		} else if len(reset) > 0 {
+			note += fmt.Sprintf("; resets %s to default", strings.Join(reset, ", "))
+		}
 		ops = append(ops, Op{
 			Router: target, Method: MethodUpdate, Path: "/" + section + "/" + id, Body: set,
 			Section: section, Identity: ref.Identity,
-			Note: fmt.Sprintf("update %s to match router %s", ref, dir.Source()),
+			Note: note,
 		})
 	}
 	for _, field := range unset {

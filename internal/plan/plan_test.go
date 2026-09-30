@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"mtha/internal/config"
+	"mtha/internal/diff"
 	"mtha/internal/model"
 )
 
@@ -90,7 +91,7 @@ func TestBuildConsecutiveCreatesKeepOrder(t *testing.T) {
 	assertGolden(t, "consecutive_creates", p.Render())
 }
 
-// Deletes, updates (PATCH for set fields, unset for fields the source
+// Deletes, updates (PATCH for set fields, unset for a matcher the source
 // leaves at default) and creates in one section; plus a B→A choice in a
 // second section, so the plan writes to both routers, each group preceded by
 // its own backup.
@@ -598,4 +599,92 @@ func writeSample(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// A field the source leaves at its default is reset with what RouterOS
+// accepts for it (issue #25): "" in a PATCH for free text and for every
+// section but the firewall rule lists, "false" in a PATCH for a yes/no
+// field, and the unset command only for a firewall rule's matchers.
+func TestBuildResetToDefault(t *testing.T) {
+	type op struct {
+		method Method
+		path   string
+		body   map[string]string
+	}
+	cases := []struct {
+		name, section string
+		a, b          model.Entry
+		id            string
+		want          []op
+	}{
+		{
+			"firewall matcher is unset", "ip/firewall/filter",
+			model.Entry{".id": "*1", "chain": "input", "comment": "r", "action": "accept"},
+			model.Entry{".id": "*11", "chain": "input", "comment": "r", "action": "accept", "src-address": "10.0.0.0/8"},
+			"r",
+			[]op{{MethodCommand, "/ip/firewall/filter/unset", map[string]string{"numbers": "*11", "value-name": "src-address"}}},
+		},
+		{
+			"firewall log-prefix is patched empty", "ip/firewall/filter",
+			model.Entry{".id": "*1", "chain": "input", "comment": "r", "action": "accept"},
+			model.Entry{".id": "*11", "chain": "input", "comment": "r", "action": "accept", "log-prefix": "x"},
+			"r",
+			[]op{{MethodUpdate, "/ip/firewall/filter/*11", map[string]string{"log-prefix": ""}}},
+		},
+		{
+			"firewall yes/no fields are patched false", "ip/firewall/nat",
+			model.Entry{".id": "*1", "chain": "srcnat", "comment": "r", "action": "masquerade"},
+			model.Entry{".id": "*11", "chain": "srcnat", "comment": "r", "action": "masquerade", "disabled": "true", "log": "true"},
+			"r",
+			[]op{{MethodUpdate, "/ip/firewall/nat/*11", map[string]string{"disabled": "false", "log": "false"}}},
+		},
+		{
+			"set, reset and unset together: one PATCH, then the unset", "ip/firewall/filter",
+			model.Entry{".id": "*1", "chain": "input", "comment": "r", "action": "accept"},
+			model.Entry{".id": "*11", "chain": "input", "comment": "r", "action": "drop", "log-prefix": "x", "in-interface": "ether1"},
+			"r",
+			[]op{
+				{MethodUpdate, "/ip/firewall/filter/*11", map[string]string{"action": "accept", "log-prefix": ""}},
+				{MethodCommand, "/ip/firewall/filter/unset", map[string]string{"numbers": "*11", "value-name": "in-interface"}},
+			},
+		},
+		{
+			"lease address-lists is patched empty", "ip/dhcp-server/lease",
+			model.Entry{".id": "*1", "address": "192.168.88.50", "mac-address": "02:00:00:00:AA:01", "address-lists": ""},
+			model.Entry{".id": "*21", "address": "192.168.88.50", "mac-address": "02:00:00:00:AA:01", "address-lists": "x"},
+			"",
+			[]op{{MethodUpdate, "/ip/dhcp-server/lease/*21", map[string]string{"address-lists": ""}}},
+		},
+		{
+			"script comment is patched empty", "system/script",
+			model.Entry{".id": "*1", "name": "hello", "source": ":log info hi"},
+			model.Entry{".id": "*31", "name": "hello", "source": ":log info hi", "comment": "c"},
+			"hello",
+			[]op{{MethodUpdate, "/system/script/*31", map[string]string{"comment": ""}}},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a, b := []model.Entry{c.a}, []model.Entry{c.b}
+			choices := choose(AtoB, c.id)
+			if c.id == "" {
+				// Take the identity the model gives the entry.
+				choices = map[HunkRef]Direction{}
+				for _, h := range diff.Compare(c.section, a, b, nil).Hunks {
+					choices[RefOf(h)] = AtoB
+				}
+			}
+			p := Build([]SectionInput{{Section: c.section, A: a, B: b, Choices: choices}}, Options{BackupName: "bk"})
+			got := p.Ops[1:] // after the backup
+			if len(got) != len(c.want) {
+				t.Fatalf("got %d op(s), want %d:\n%s", len(got), len(c.want), p.Render())
+			}
+			for i, w := range c.want {
+				g := got[i]
+				if g.Method != w.method || g.Path != w.path || !reflect.DeepEqual(g.Body, w.body) {
+					t.Errorf("op %d = %s %s %v, want %s %s %v", i+1, g.Method, g.Path, g.Body, w.method, w.path, w.body)
+				}
+			}
+		})
+	}
 }

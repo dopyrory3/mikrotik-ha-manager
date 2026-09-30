@@ -11,7 +11,8 @@
 //   - a pre-apply backup (POST /system/backup/save) first on every router
 //     the plan writes to;
 //   - then, per section in the order given: deletes, then updates (PATCH for
-//     changed fields, POST …/unset for fields the source doesn't set), then
+//     changed fields, including "" or "false" for a field the source leaves
+//     at its default; POST …/unset for a firewall matcher it leaves unset), then
 //     moves (POST …/move, reordering a firewall chain), then creates (PUT,
 //     RouterOS REST's "add") in source order;
 //   - creates into firewall rule lists carry place-before, anchored to the
