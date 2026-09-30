@@ -290,12 +290,153 @@ func TestBuildIdentitiesDNSStatic(t *testing.T) {
 			want:    []string{"host1|A|10.0.0.5"},
 		},
 		{
-			name: "unsurveyed type has no value",
+			// A type the probe did not return has no known value field, so
+			// it keys on name and type and is paired by occurrence.
+			name: "unknown type has no value",
 			entries: []Entry{
-				{"name": "example", "type": "TXT", "text": "one"},
-				{"name": "example", "type": "TXT", "text": "two"},
+				{"name": "example", "type": "CAA", "value": "one"},
+				{"name": "example", "type": "CAA", "value": "two"},
 			},
-			want: []string{"example|TXT", "example|TXT"},
+			want: []string{"example|CAA", "example|CAA"},
+		},
+	})
+}
+
+// One case per record type in write probe 1 of docs/lab-rest-contract.md,
+// each shaped as the device returns it (only the type's value fields, plus
+// ttl, which is not part of the key). Each case puts two records under one
+// name that RouterOS accepts side by side (write probe 2), so each must get
+// its own identity rather than share "name|type".
+func TestBuildIdentitiesDNSStaticPerType(t *testing.T) {
+	runIdentityCases(t, "ip/dns/static", []identityCase{
+		{
+			name: "A",
+			entries: []Entry{
+				{"name": "h.example", "type": "A", "ttl": "1d", "address": "192.0.2.1"},
+				{"name": "h.example", "type": "A", "ttl": "1d", "address": "192.0.2.2"},
+			},
+			want: []string{"h.example|A|192.0.2.1", "h.example|A|192.0.2.2"},
+		},
+		{
+			// AAAA shares A's field, not a field of its own.
+			name: "AAAA",
+			entries: []Entry{
+				{"name": "h.example", "type": "AAAA", "ttl": "1d", "address": "2001:db8::1"},
+				{"name": "h.example", "type": "AAAA", "ttl": "1d", "address": "2001:db8::2"},
+			},
+			want: []string{"h.example|AAAA|2001:db8::1", "h.example|AAAA|2001:db8::2"},
+		},
+		{
+			name: "CNAME",
+			entries: []Entry{
+				{"name": "h.example", "type": "CNAME", "ttl": "1d", "cname": "one.example"},
+				{"name": "h.example", "type": "CNAME", "ttl": "1d", "cname": "two.example"},
+			},
+			want: []string{"h.example|CNAME|one.example", "h.example|CNAME|two.example"},
+		},
+		{
+			// Two MX records differing only in preference are two records.
+			name: "MX",
+			entries: []Entry{
+				{"name": "h.example", "type": "MX", "ttl": "1d", "mx-exchange": "mail.example", "mx-preference": "0"},
+				{"name": "h.example", "type": "MX", "ttl": "1d", "mx-exchange": "mail.example", "mx-preference": "10"},
+				{"name": "h.example", "type": "MX", "ttl": "1d", "mx-exchange": "mx2.example", "mx-preference": "10"},
+			},
+			want: []string{
+				"h.example|MX|0|mail.example",
+				"h.example|MX|10|mail.example",
+				"h.example|MX|10|mx2.example",
+			},
+		},
+		{
+			// Any one of the four SRV fields makes a different record.
+			name: "SRV",
+			entries: []Entry{
+				{"name": "_sip._udp.example", "type": "SRV", "ttl": "1d", "srv-target": "sip.example", "srv-port": "5060", "srv-priority": "0", "srv-weight": "0"},
+				{"name": "_sip._udp.example", "type": "SRV", "ttl": "1d", "srv-target": "sip.example", "srv-port": "5060", "srv-priority": "1", "srv-weight": "0"},
+				{"name": "_sip._udp.example", "type": "SRV", "ttl": "1d", "srv-target": "sip.example", "srv-port": "5060", "srv-priority": "0", "srv-weight": "5"},
+				{"name": "_sip._udp.example", "type": "SRV", "ttl": "1d", "srv-target": "sip.example", "srv-port": "5061", "srv-priority": "0", "srv-weight": "0"},
+				{"name": "_sip._udp.example", "type": "SRV", "ttl": "1d", "srv-target": "sip2.example", "srv-port": "5060", "srv-priority": "0", "srv-weight": "0"},
+			},
+			want: []string{
+				"_sip._udp.example|SRV|0|0|5060|sip.example",
+				"_sip._udp.example|SRV|1|0|5060|sip.example",
+				"_sip._udp.example|SRV|0|5|5060|sip.example",
+				"_sip._udp.example|SRV|0|0|5061|sip.example",
+				"_sip._udp.example|SRV|0|0|5060|sip2.example",
+			},
+		},
+		{
+			// TXT is case-sensitive on the device: "a" and "A" are two
+			// records, so the text is not folded.
+			name: "TXT",
+			entries: []Entry{
+				{"name": "h.example", "type": "TXT", "ttl": "1d", "text": "a"},
+				{"name": "h.example", "type": "TXT", "ttl": "1d", "text": "A"},
+			},
+			want: []string{"h.example|TXT|a", "h.example|TXT|A"},
+		},
+		{
+			name: "NS",
+			entries: []Entry{
+				{"name": "sub.example", "type": "NS", "ttl": "1d", "ns": "ns1.example"},
+				{"name": "sub.example", "type": "NS", "ttl": "1d", "ns": "ns2.example"},
+			},
+			want: []string{"sub.example|NS|ns1.example", "sub.example|NS|ns2.example"},
+		},
+		{
+			name: "FWD",
+			entries: []Entry{
+				{"name": "corp.example", "type": "FWD", "ttl": "1d", "forward-to": "10.0.0.53"},
+				{"name": "corp.example", "type": "FWD", "ttl": "1d", "forward-to": "10.0.0.54"},
+			},
+			want: []string{"corp.example|FWD|10.0.0.53", "corp.example|FWD|10.0.0.54"},
+		},
+		{
+			// NXDOMAIN has no value field: name and type are the whole key,
+			// as they are on the device.
+			name: "NXDOMAIN",
+			entries: []Entry{
+				{"name": "blocked.example", "type": "NXDOMAIN", "ttl": "1d"},
+				{"name": "other.example", "type": "NXDOMAIN", "ttl": "1d"},
+			},
+			want: []string{"blocked.example|NXDOMAIN", "other.example|NXDOMAIN"},
+		},
+		{
+			// A regexp record has regexp and no name key, and RouterOS
+			// still reports type A. It keys on regexp + address, and does
+			// not share an identity with a name record spelled the same.
+			name: "regexp",
+			entries: []Entry{
+				{"regexp": `rx\.probe`, "type": "A", "ttl": "1d", "address": "192.0.2.1"},
+				{"regexp": `rx\.probe`, "type": "A", "ttl": "1d", "address": "192.0.2.2"},
+				{"name": `rx\.probe`, "type": "A", "ttl": "1d", "address": "192.0.2.1"},
+			},
+			want: []string{
+				`regexp:rx\.probe|A|192.0.2.1`,
+				`regexp:rx\.probe|A|192.0.2.2`,
+				`rx\.probe|A|192.0.2.1`,
+			},
+		},
+		{
+			// A field of another type is not part of the key: RouterOS
+			// drops it (a CNAME sent with an address), so a record that
+			// carries one keys as if it did not. ttl, comment and
+			// match-subdomain are not part of the device's key either.
+			name: "only the type's own fields",
+			entries: []Entry{
+				{"name": "h.example", "type": "CNAME", "cname": "one.example", "address": "192.0.2.1", "ttl": "5m", "comment": "c", "match-subdomain": "true"},
+			},
+			want: []string{"h.example|CNAME|one.example"},
+		},
+		{
+			// name is case-sensitive on the device.
+			name: "name case",
+			entries: []Entry{
+				{"name": "svc.lab.example", "type": "A", "address": "192.0.2.1"},
+				{"name": "SVC.lab.example", "type": "A", "address": "192.0.2.1"},
+			},
+			want: []string{"svc.lab.example|A|192.0.2.1", "SVC.lab.example|A|192.0.2.1"},
 		},
 	})
 }
