@@ -570,6 +570,35 @@ Deleting a referent that something still names:
 So the create-time check is by name and strict, while the delete-time
 check mostly isn't: the link is stored by `.id` and left dangling.
 
+### 6. Resetting a field to its default
+
+What clears a field that is set, per property (issue #25). "unset" is
+`POST /rest/<section>/unset {"numbers":id,"value-name":field}`; "empty" is
+`PATCH {field:""}`. No one mechanism works everywhere.
+
+| Property | unset | empty | What resets it |
+|---|---|---|---|
+| firewall matcher or action parameter taking a typed value (`src-address`, `dst-address`, `in-interface`, nat `to-addresses`, `to-ports`) | `200`, key gone | `400` (`"value of range expects range of ip addresses"`, `"ambiguous value of interface"`, ...) | **unset only** |
+| firewall matcher taking a name or list (`src-address-list`, `connection-state`, `connection-mark`) | `200`, key gone | `200`, but the key stays as `""` | unset (either works) |
+| firewall `log-prefix`, `comment` (filter, nat, mangle, raw) | `400 "input does not match any value of value-name"` | `200` | **empty only** |
+| any yes/no property: firewall `disabled`, `log`, mangle `passthrough`, lease `block-access`, script `dont-require-permissions` | `400` | `400 "invalid value of disabled, must be either yes or no"` | **neither**: `PATCH` it to `"false"` |
+| `system/script` anything | `400 "no such command"`: the section has no unset | `200` for `comment` | empty |
+| `ip/dhcp-server/lease` `address-lists`, `client-id`, `rate-limit` | `400` (value-name) | `200` | empty |
+| `ip/dhcp-server/network` `ntp-server`, `domain`, `comment` | `400` | `200` | empty |
+| `ip/dns/static` `comment`, `address-list` | `400` | `200` | empty |
+| `ip/route` `comment` | `400` | `200` | empty |
+| `ip/firewall/address-list` `comment` | `400` | `200` | empty |
+| `system/scheduler` `comment`, `on-event` | `400` | `200` | empty |
+| `ip/service` `address` | `400` | `200` | empty |
+| `interface/vrrp` `comment`, `on-master` | `400` | `200` | empty |
+| a time value: lease `lease-time`, dns `ttl`, scheduler `interval` | `400` | `400 "invalid time value for argument ..."` | **neither**; `lease-time` takes `"0s"`. The planner does not know these and sends empty, which fails |
+| `ip/route` `distance` | `200`, reads back `"1"` | `400 "an integer required"` | unset (the planner sends empty; the field is always present, so it is normally set, not reset) |
+| `ip/route` `routing-table` | `400` | `200`, but a no-op: still `"main"` | nothing to reset |
+
+So outside the firewall rule lists `unset` is never the answer for a
+property the planner resets, and inside them it is the answer for
+everything except the two free-text properties and the yes/no ones.
+
 ## Errors
 
 | Case | Status | Body |

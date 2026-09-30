@@ -116,28 +116,30 @@ func TestLabApplyChangeField(t *testing.T) {
 	requireClean(t, lab, filter)
 }
 
-// Unset to default: a leaves a field at its default while b sets it, so
-// syncing a→b plans POST <section>/unset for the field, and the device must
-// then show the default. One case per field, each its own apply of that one
-// hunk, so every refused field is reported rather than hidden behind the
-// first. (TestLabSyncFieldBackToDefault already covers a firewall rule's
+// Reset to default: a leaves a field at its default while b sets it, so
+// syncing a→b plans whatever RouterOS accepts to clear that field, and the
+// device must then show the default. One case per field, each its own apply
+// of that one hunk, so every refused field is reported rather than hidden
+// behind the first. (TestLabSyncFieldBackToDefault covers a firewall rule's
 // disabled and log.)
 //
-// It fails today, on purpose. RouterOS 7.23.7 accepts the unset for a
-// firewall rule's src-address but refuses it for its log-prefix and for a
-// lease's address-lists ("input does not match any value of value-name",
-// 400), where PATCHing "" is accepted and reads back as the default: the
-// reverse of what plan.updateOps assumes. Left for a fix in the planner.
+// The mechanism differs per field (issue #25, docs/lab-rest-contract.md):
+// RouterOS 7.23.7 accepts the unset command for a firewall rule's
+// src-address and refuses "" there, but refuses unset for its log-prefix
+// and for a lease's address-lists ("input does not match any value of
+// value-name", 400), where PATCHing "" is accepted and reads back as the
+// default. The dry run must show the operation that is actually sent.
 func TestLabApplyUnsetToDefault(t *testing.T) {
 	lab := labtest.New(t)
 
 	cases := []struct {
 		name, section, field, value string
 		find                        func(map[string]string) bool
+		unset                       bool // the unset command, rather than a PATCH to ""
 	}{
-		{"firewall src-address", filter, "src-address", "10.0.0.0/8", byComment("lab: allow ssh")},
-		{"firewall log-prefix", filter, "log-prefix", "lab-x", byComment("lab: trusted out")},
-		{"dhcp lease address-lists", "ip/dhcp-server/lease", "address-lists", "lab-x", byComment("lab: static lease")},
+		{"firewall src-address", filter, "src-address", "10.0.0.0/8", byComment("lab: allow ssh"), true},
+		{"firewall log-prefix", filter, "log-prefix", "lab-x", byComment("lab: trusted out"), false},
+		{"dhcp lease address-lists", "ip/dhcp-server/lease", "address-lists", "lab-x", byComment("lab: static lease"), false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -156,8 +158,15 @@ func TestLabApplyUnsetToDefault(t *testing.T) {
 			s.selectHunk(c.section, 0, plan.AtoB)
 			v := s.plan()
 			ops := shownOps(t, v)
-			if len(ops) != 2 || ops[1].Method != "POST" || !strings.HasSuffix(ops[1].Path, "/unset") || ops[1].Body["value-name"] != c.field {
-				t.Fatalf("want the backup and one unset of %s, got %v:\n%s", c.field, ops, v)
+			if len(ops) != 2 {
+				t.Fatalf("want the backup and one reset of %s, got %v:\n%s", c.field, ops, v)
+			}
+			if c.unset {
+				if ops[1].Method != "POST" || !strings.HasSuffix(ops[1].Path, "/unset") || ops[1].Body["value-name"] != c.field {
+					t.Fatalf("want one unset of %s, got %v:\n%s", c.field, ops[1], v)
+				}
+			} else if value, ok := ops[1].Body[c.field]; ops[1].Method != "PATCH" || !ok || value != "" || len(ops[1].Body) != 1 {
+				t.Fatalf("want one PATCH of %s alone to \"\", got %v:\n%s", c.field, ops[1], v)
 			}
 			v = s.confirm(false)
 			if got := only(t, lab.B, c.section, c.find)[c.field]; got != "" {
@@ -170,9 +179,8 @@ func TestLabApplyUnsetToDefault(t *testing.T) {
 }
 
 // The script comment: system/script has no unset command at all on
-// RouterOS 7.23.7 ("no such command", 400), so no field of a script can be
-// synced back to its default. Fails today, on purpose, like
-// TestLabApplyUnsetToDefault.
+// RouterOS 7.23.7 ("no such command", 400), so a script's field is synced
+// back to its default by PATCHing "".
 func TestLabApplyUnsetScriptComment(t *testing.T) {
 	lab := labtest.New(t)
 	const section = "system/script"
@@ -186,14 +194,19 @@ func TestLabApplyUnsetScriptComment(t *testing.T) {
 	s.drift()
 	s.selectSection(section, plan.AtoB)
 	v := s.plan()
-	if ops := shownOps(t, v); len(ops) != 2 || !strings.HasSuffix(ops[1].Path, "/unset") {
-		t.Fatalf("want the backup and one unset, got %v:\n%s", ops, v)
+	ops := shownOps(t, v)
+	if len(ops) != 2 || ops[1].Method != "PATCH" || len(ops[1].Body) != 1 {
+		t.Fatalf("want the backup and one PATCH of comment alone, got %v:\n%s", ops, v)
+	}
+	if value, ok := ops[1].Body["comment"]; !ok || value != "" {
+		t.Fatalf("want comment PATCHed to \"\", got %v:\n%s", ops[1], v)
 	}
 	v = s.confirm(false)
 	if got := only(t, lab.B, section, byName("lab-hello"))["comment"]; got != "" {
 		t.Fatalf("b's lab-hello comment is still %q, want none; the apply reported:\n%s", got, resultLines(v))
 	}
 	requireApplied(t, v)
+	requireClean(t, lab, section)
 }
 
 // place-before whose anchor is not on the target: the create falls back to
