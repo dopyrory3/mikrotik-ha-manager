@@ -119,19 +119,27 @@ func TestLabRenderEveryScreenAt80x24(t *testing.T) {
 // fits reports how view overflows a width×height terminal: each line wider
 // than width, and the line count if taller. Nothing means it fits.
 func fits(screen, view string, width, height int) []string {
+	return append(tooTall(screen, view, height), tooWide(screen, view, width)...)
+}
+
+// tooTall is the height half of fits.
+func tooTall(screen, view string, height int) []string {
+	if n := len(strings.Split(view, "\n")); n > height {
+		return []string{fmt.Sprintf("  %s: %d lines, the terminal has %d", screen, n, height)}
+	}
+	return nil
+}
+
+// tooWide is the width half of fits.
+func tooWide(screen, view string, width int) []string {
 	var wide []string
-	lines := strings.Split(view, "\n")
-	for i, l := range lines {
+	for i, l := range strings.Split(view, "\n") {
 		if w := lipgloss.Width(l); w > width {
 			wide = append(wide, fmt.Sprintf("    line %d, %d columns: %s", i+1, w, labtest.StripANSI(l)))
 		}
 	}
-	var out []string
-	if len(lines) > height {
-		out = append(out, fmt.Sprintf("  %s: %d lines, the terminal has %d", screen, len(lines), height))
+	if len(wide) == 0 {
+		return nil
 	}
-	if len(wide) > 0 {
-		out = append(out, fmt.Sprintf("  %s: %d line(s) wider than %d columns:\n%s", screen, len(wide), width, strings.Join(wide, "\n")))
-	}
-	return out
+	return []string{fmt.Sprintf("  %s: %d line(s) wider than %d columns:\n%s", screen, len(wide), width, strings.Join(wide, "\n"))}
 }
