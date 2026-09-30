@@ -54,7 +54,7 @@ func renderDashboard(m Model) string {
 	b.WriteString("\n\n")
 
 	verdict, checks := evaluateReadiness(m.snapshots["a"], m.snapshots["b"], haveA, haveB, m.driftData, m.driftErr, m.runtimeStatus, m.runtimeErr)
-	b.WriteString(renderVerdict(verdict, checks))
+	b.WriteString(renderVerdict(verdict, checks, m.width))
 	b.WriteString("\n\n")
 
 	b.WriteString(styleStatusBar.Render(statusLine(m)))
@@ -134,7 +134,11 @@ func modeLabel(writeMode bool) string {
 	return "read-only"
 }
 
-func renderVerdict(v Verdict, checks []Check) string {
+// renderVerdict is the readiness verdict and one line per check, its note
+// in parentheses after the label. A check that doesn't fit width (0: no
+// limit) wraps under its label, the note moving to lines of its own, so
+// nothing an operator needs is cut off in an 80-column terminal (§6).
+func renderVerdict(v Verdict, checks []Check, width int) string {
 	style := styleDegraded
 	switch v {
 	case VerdictReady:
@@ -143,10 +147,7 @@ func renderVerdict(v Verdict, checks []Check) string {
 		style = styleMuted
 	}
 
-	var b strings.Builder
-	b.WriteString("Readiness: ")
-	b.WriteString(style.Render(v.String()))
-	b.WriteString("\n")
+	lines := []string{"Readiness: " + style.Render(v.String())}
 	for _, c := range checks {
 		mark := "✗"
 		markStyle := styleDown
@@ -154,12 +155,15 @@ func renderVerdict(v Verdict, checks []Check) string {
 			mark = "✓"
 			markStyle = styleReady
 		}
-		line := fmt.Sprintf("  %s %s", markStyle.Render(mark), c.Label)
+		note := ""
 		if c.Note != "" {
-			line += styleMuted.Render(" (" + c.Note + ")")
+			note = "(" + c.Note + ")"
 		}
-		b.WriteString(line)
-		b.WriteString("\n")
+		lines = append(lines, wrapPair("  "+markStyle.Render(mark)+" ", c.Label, note, styleMuted.Render, width, checkIndent)...)
 	}
-	return b.String()
+	return strings.Join(lines, "\n")
 }
+
+// checkIndent lines a readiness check's continuation lines up under its
+// label.
+const checkIndent = 4

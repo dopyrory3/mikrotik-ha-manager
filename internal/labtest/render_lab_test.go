@@ -25,14 +25,13 @@ import (
 // A line wider than the terminal is cut off by Bubble Tea's renderer, and a
 // view taller than it loses its top lines, title and cursor first.
 //
-// It fails today, on purpose (issue #17): the Overview's runtime readiness
-// line is 82 columns even at baseline; the Drift screen neither scrolls nor
-// fits identities built from real comments (and an order finding is one
-// line of every moved identity); the Apply screen's ops and notes run to
-// their full JSON and identities. outageSession finds the same for error
-// text (a Drift fetch error is one unwrapped line).
+// Issue #27 was what it found first: the Overview's runtime readiness line
+// at 82 columns even at baseline, a Drift screen that neither scrolled nor
+// wrapped identities built from real comments (an order finding was one
+// 779-column line), and the Apply screen's ops and notes running to their
+// full JSON and identities. The screens now wrap such text and scroll it;
+// outageSession holds error text to the same.
 func TestLabRenderEveryScreenAt80x24(t *testing.T) {
-	t.Skip("issue #27: the screens overflow 80 columns with real device data; cosmetic, deferred past v0.1.0 — remove this skip with the fix")
 	lab := labtest.New(t)
 	addScaleRules(t, lab)
 

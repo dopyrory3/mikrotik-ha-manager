@@ -84,21 +84,17 @@ var vrrpLanMaster = regexp.MustCompile(`vrrp vrrp-lan\s+master\b`)
 // unreachable if wantUnreachable, otherwise a unreachable or b polled as
 // master), polling recovering by itself to a master and b backup, and b's
 // VRRP takeover and hand-back on the Events timeline. The screens shown
-// during the outage are held to 24 lines as well. Their width is measured
-// and logged but not asserted: error text is some of the widest there is,
-// and screens overflowing 80 columns with real data is issue #27, deferred
-// past v0.1.0 (as TestLabRenderEveryScreenAt80x24 is).
+// during the outage are held to 80×24 as well: error text is some of the
+// widest there is.
 func outageSession(t *testing.T, lab *labtest.Lab, what string, wantUnreachable bool, induce func()) {
 	t.Helper()
 	d := labtest.Drive(t, ui.New(lab.Pair, false, lab.Pollers(time.Second)))
 	d.Send(tea.WindowSizeMsg{Width: 80, Height: 24})
 	waitPolledBackup(t, d)
 
-	var failures, wide []string
+	var failures []string
 	check := func(screen string) {
-		v := d.Model().View()
-		failures = append(failures, tooTall(screen, v, 24)...)
-		wide = append(wide, tooWide(screen, v, 80)...)
+		failures = append(failures, fits(screen, d.Model().View(), 80, 24)...)
 	}
 
 	start := time.Now()
@@ -165,11 +161,7 @@ func outageSession(t *testing.T, lab *labtest.Lab, what string, wantUnreachable 
 	check("events, recovered")
 
 	if len(failures) > 0 {
-		t.Errorf("%d screen(s) do not fit 24 lines during the %s:\n%s", len(failures), what, strings.Join(failures, "\n"))
-	}
-	if len(wide) > 0 {
-		t.Logf("issue #27: %d screen(s) overflow 80 columns during the %s; cosmetic, deferred past v0.1.0, so not asserted — make this an error again with the fix:\n%s",
-			len(wide), what, strings.Join(wide, "\n"))
+		t.Errorf("%d screen(s) do not fit 80×24 during the %s:\n%s", len(failures), what, strings.Join(failures, "\n"))
 	}
 }
 
