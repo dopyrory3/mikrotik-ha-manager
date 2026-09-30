@@ -164,14 +164,11 @@ func TestLabRuntimeNetwatchDegradesAndRestores(t *testing.T) {
 // restored only once both are up again: the first target's up-script must
 // not undo the second's down-script.
 //
-// It fails today, on purpose: the up-script counts entries matching
-// "disabled=no status=down", and on RouterOS 7.23.7 an enabled netwatch
-// entry has no disabled property at all, so disabled=no matches nothing
-// (":len [/tool/netwatch find where disabled=no]" is 0 with every entry
-// enabled; "!disabled" is the form that matches). The count is always 0 and
-// the first target to come back restores the base priority while the other
-// is still down. It is a runtime template bug (netwatchDownAny in
-// internal/runtime/templates.go), left for a fix.
+// The up-script's count of entries still down is what this pins (issue
+// #26): it once filtered on "disabled=no status=down", and on RouterOS
+// 7.23.7 an enabled netwatch entry has no disabled property at all, so
+// that matched nothing, the count was always 0, and the first target to
+// come back restored the base priority while the other was still down.
 func TestLabRuntimeNetwatchTwoTargets(t *testing.T) {
 	lab := labtest.New(t)
 	pair := runtimePair(lab, []string{rtTargetA, rtTargetB}, config.TogglesConfig{})
