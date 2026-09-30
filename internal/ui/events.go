@@ -152,7 +152,8 @@ func (m Model) timeline() []events.Event {
 
 // eventsOverhead is the number of lines renderEvents spends on everything
 // but timeline rows: title, blank, two router lines, blank, column header,
-// blank, status bar.
+// blank, status bar. A router line wrapped over more lines (a long error)
+// takes its extra lines from the timeline.
 const eventsOverhead = 8
 
 // eventsRows is how many timeline rows fit on screen.
@@ -161,7 +162,11 @@ func (m Model) eventsRows() int {
 	if h == 0 {
 		h = 24 // before the first WindowSizeMsg; §6's minimum terminal
 	}
-	return max(h-eventsOverhead, 1)
+	extra := 0
+	for _, key := range []poll.RouterKey{"a", "b"} {
+		extra += strings.Count(renderEventsRouterLine(m, key), "\n")
+	}
+	return max(h-eventsOverhead-extra, 1)
 }
 
 // clampEventsScroll keeps the scroll offset within the timeline, so the last
@@ -217,11 +222,12 @@ func renderEvents(m Model) string {
 	return b.String()
 }
 
-// renderEventsRouterLine summarises one router's last log read.
+// renderEventsRouterLine summarises one router's last log read, wrapped to
+// the terminal's width.
 func renderEventsRouterLine(m Model, key poll.RouterKey) string {
 	label := "Router " + strings.ToUpper(string(key)) + ": "
 	if err := m.eventsErrs[key]; err != nil {
-		return label + styleDown.Render("error: "+err.Error())
+		return strings.Join(wrapLines(label, "error: "+err.Error(), styleDown.Render, m.width, 2), "\n")
 	}
 	log, ok := m.eventsLogs[key]
 	if !ok {
@@ -237,7 +243,8 @@ func renderEventsRouterLine(m Model, key poll.RouterKey) string {
 		if skew < 0 {
 			dir, skew = "behind", -skew
 		}
-		return label + line + ", " + styleDegraded.Render(fmt.Sprintf("clock %s %s this machine (timeline corrected)", skew, dir))
+		clock := fmt.Sprintf("clock %s %s this machine (timeline corrected)", skew, dir)
+		return strings.Join(wrapPair(label, line+",", clock, styleDegraded.Render, m.width, 2), "\n")
 	}
 	return label + line
 }

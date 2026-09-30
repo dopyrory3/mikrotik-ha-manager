@@ -91,17 +91,17 @@ func renderRuntime(m Model) string {
 	b.WriteString("\n\n")
 
 	if m.runtimeNotice != "" {
-		b.WriteString(styleDegraded.Render(m.runtimeNotice))
+		b.WriteString(strings.Join(wrapLines("", m.runtimeNotice, styleDegraded.Render, m.width, 2), "\n"))
 		b.WriteString("\n\n")
 	}
 
 	switch {
 	case m.runtimePlanErr != nil:
-		b.WriteString(styleDown.Render("config error: " + m.runtimePlanErr.Error()))
+		b.WriteString(strings.Join(wrapLines("", "config error: "+m.runtimePlanErr.Error(), styleDown.Render, m.width, 2), "\n"))
 	case m.runtimeFetching:
 		b.WriteString(styleMuted.Render("working..."))
 	case m.runtimeErr != nil:
-		b.WriteString(styleDown.Render("error: " + m.runtimeErr.Error()))
+		b.WriteString(strings.Join(wrapLines("", "error: "+m.runtimeErr.Error(), styleDown.Render, m.width, 2), "\n"))
 		b.WriteString("\n\n")
 		b.WriteString(renderRuntimeStatus(m))
 	case m.runtimeStatus != nil:
@@ -125,13 +125,14 @@ func renderRuntimeStatus(m Model) string {
 			continue
 		}
 		for _, it := range items {
-			b.WriteString("  ")
-			b.WriteString(statusStyle(it.State).Render(it.State.String()))
-			fmt.Fprintf(&b, "  %s", it.Label)
+			note := ""
 			if it.Note != "" {
-				b.WriteString(styleMuted.Render(" (" + it.Note + ")"))
+				note = "(" + it.Note + ")"
 			}
-			b.WriteString("\n")
+			prefix := "  " + statusStyle(it.State).Render(it.State.String()) + "  "
+			for _, l := range wrapPair(prefix, it.Label, note, styleMuted.Render, m.width, 4) {
+				b.WriteString(l + "\n")
+			}
 		}
 	}
 	return b.String()

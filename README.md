@@ -14,7 +14,8 @@ its own:
 It is `kubectl`, not a control plane. Nothing that happens *during* a failure
 depends on `mtha` running — VRRP, netwatch and the scripts that adjust
 priority all live on the routers themselves. The tool is for designing,
-deploying, verifying, syncing and rehearsing.
+deploying, verifying and syncing. Planned failover is specified but is not
+implemented in this release.
 
 > **Status:** Milestones 1–4, 6 and the in-app help portion of 7 are done:
 > Overview, Drift, Runtime
@@ -77,8 +78,23 @@ routers plus a single readiness verdict. Press `1` for **Overview**, `2` for
 for help on any screen: select hunks on Drift (`space`, or `a`/`b` for a
 whole section), then review and run the plan on Apply.
 
+![Overview showing both lab routers and readiness checks](docs/images/overview.png)
+
 See [docs/usage.md](docs/usage.md) for screens and keybindings, and
 [docs/configuration.md](docs/configuration.md) for the pair file reference.
+
+## Command-line flags
+
+- `-config <path>` reads the pair file (default `~/.config/mtha/pairs.yaml`).
+- `-pair <name>` selects a pair when the file defines more than one; it is
+  optional when there is only one.
+- `-write` enables confirmed write operations. Without it, the session is
+  read-only.
+- `-init` writes a commented sample pair file to `-config` and exits; it
+  refuses to overwrite an existing file.
+- `-version` prints the build version and exits.
+
+The standard Go flag parser also supports `-h`/`-help` for flag help.
 
 ## Safety model
 
@@ -107,6 +123,27 @@ See [docs/usage.md](docs/usage.md) for screens and keybindings, and
   re-run afterwards to report anything still different. Failover will reuse
   the same pattern.
 
+The Drift screen shows the differences selected for sync, and Apply shows the
+resulting dry-run operations before confirmation:
+
+![Drift between the lab routers](docs/images/drift.png)
+
+![Apply dry run for the selected difference](docs/images/apply.png)
+
+Runtime shows the state of managed automation and Events shows the merged
+router timeline. Press `?` for the built-in help overlay:
+
+![Runtime verification status](docs/images/runtime.png)
+
+![Merged router events](docs/images/events.png)
+
+![In-app help overlay](docs/images/help.png)
+
+These are captures from a real RouterOS lab. To regenerate all six, bring up
+instance 5 and run `MTHA_LAB_INSTANCE=5 docs/images/capture.sh`; the script
+temporarily adds an address-list entry on router A to provide real Drift and
+Apply output, then removes it. See [the screenshot generator](docs/images/capture.sh).
+
 ## Status
 
 | Milestone | Scope | State |
@@ -115,7 +152,7 @@ See [docs/usage.md](docs/usage.md) for screens and keybindings, and
 | 2. Drift | Section readers, normaliser, diff engine, drift screen | Done |
 | 3. Apply | Planner, dry run, backup, apply, verify | Done |
 | 4. Runtime | Templates, deploy, verify, remove | Done |
-| 5. Failover | Pre-flight, action, live view, VIP probe | Not started |
+| 5. Failover | Pre-flight, action, live view, VIP probe | Not started (outside this release) |
 | 6. Events | Log merge, timeline | Done |
 | 7. Polish | In-app help | Done |
 
@@ -166,23 +203,90 @@ export MTHA_LAB_A_PASSWORD=London12 MTHA_LAB_B_PASSWORD=London12
 go run ./cmd/mtha -config testlab/pairs.yaml -pair lab
 ```
 
+### Several labs at once
+
+The lab above is *instance 1*. Further instances can run beside it, each with
+its own compose project (and so networks), containers, host ports, volumes
+and MACs, so lab-bound work does not have to queue for one lab.
+`testlab/lab.sh` derives all of that from an instance id:
+
+```sh
+./testlab/lab.sh up 2        # build, start, wait for both guests, provision,
+                             # and print the instance's REST URLs
+./testlab/lab.sh status 2    # its containers, and whether REST answers
+./testlab/lab.sh down 2 -v   # stop it; -v also drops its guest disks
+./testlab/lab.sh env 2       # its MTHA_LAB_* variables, for docker compose by hand
+```
+
+| Instance | Compose project | Containers | Router A / B HTTPS | SSH |
+| --- | --- | --- | --- | --- |
+| 1 (default) | `mtha-lab` | `mikrotik-router1`, `mikrotik-router2` | `443` / `8443` | `2211` / `2212` |
+| *n* = 2-99 | `mtha-lab-`*n* | `mtha-lab-`*n*`-router1`, `-router2` | 20000+100*n*+`43` / `+44` | `+22` / `+23` |
+
+So instance 2 is `https://localhost:20243` and `https://localhost:20244`.
+Instance 1 is exactly the lab the commands above bring up, so they, `lab.sh up`
+and `lab.sh up 1` are interchangeable. `lab.sh up` writes a pair file for
+instances other than 1 (it prints the path); the credentials are the same.
+
+**How many at once.** Measured on an 8-core Intel Core Ultra 5 325 with 31 GB,
+running the whole suite (`make test-lab`) on several instances at the same
+time while a separate idle instance timed VRRP failovers (a's VRRP disabled
+until b is master, and back) and sampled both roles every 100 ms:
+
+| Suites at once | Instances up | CPU busy (avg / time saturated) | Reset to baseline | VRRP failover a→b / b→a | Failures |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 4 | 21% / 0% | 15.4-16.6 s | — | none |
+| 0 (probe only) | 10 | — | — | 0.50-0.57 s / 8.25-8.33 s | — |
+| 4 | 10 | 50% / 2% | 16.0-18.8 s | 0.50-0.59 s / 8.26-8.31 s | none |
+| 6 | 10 | 60% / 17% | 16.1-22.1 s | 0.54-0.61 s / 8.26-8.38 s | none |
+| 8 | 10 | 69% / 29% | 16.6-25.1 s | 0.48-0.63 s / 8.26-8.42 s | none |
+
+No test failed and the probe never saw a spurious role change, even at eight
+concurrent suites (twenty CHR guests). Idle guests are nearly free (about 3%
+CPU each); the cost is the reboots every writing test's reset causes, which
+is where the host saturates. Rebooting eight instances at the same moment (16
+guests) settles them in 20-25 s against 17 s for one alone. So **run up to four
+suites at once** with no measurable effect; six to eight still pass but resets
+take up to 60% longer and the host is saturated for stretches, so a new
+timing-sensitive test is more likely to flake there. More than eight has not
+been measured. Scale these figures to your host's cores.
+
 ### The live-router suite
 
-`make test-lab` runs the integration tests against this lab. They write to
-both routers and deliberately break their configuration, so:
+`MTHA_LAB=1 make test-lab` runs the live-router integration suite against this
+lab. The current source lists 87 `TestLab` cases; a full run takes about 40
+minutes. The suite writes to both real routers and deliberately changes their
+configuration; each writing test restores the routers to its saved baseline,
+so:
 
 - **Prerequisites:** bring the lab up and provision it first —
   `docker compose -f testlab/docker-compose.yml up -d --build`, then
-  `./testlab/provision.sh`. The suite also needs `docker` (to check the target)
-  and `script` from util-linux (for runs of the binary in a pty).
-- **Guarded twice:** lab tests are behind the `lab` build tag *and* refuse to
-  run without `MTHA_LAB=1` (the make target sets both), so `go test ./...` and
-  `make check` never touch a router. The harness only talks to
-  `https://localhost:443` and `https://localhost:8443` as `admin`, and before
-  the first test it checks that docker publishes those ports from the
-  `mikrotik-router1`/`mikrotik-router2` containers and that a CHR guest answers
-  there. `MTHA_LAB_PASSWORD` overrides the password, like provision.sh's
-  `ROUTER_PASS`.
+  `./testlab/provision.sh` (or `./testlab/lab.sh up`, which does both). The
+  suite also needs `docker` (to check the target) and `script` from
+  util-linux (for runs of the binary in a pty).
+- **Choosing an instance:** the suite runs against instance 1 unless
+  `MTHA_LAB_INSTANCE` names another:
+
+  ```sh
+  ./testlab/lab.sh up 2
+  MTHA_LAB_INSTANCE=2 make test-lab
+  ```
+
+  Each instance has its own lock, so suites on different instances run in
+  parallel while two on the same instance still take turns.
+- **Guarded twice:** lab tests are behind the `//go:build lab` build tag *and*
+  refuse to run without `MTHA_LAB=1` (the make target sets both), so `go test ./...` and
+  `make check` never touch a router. The harness only talks to the instance's
+  two HTTPS ports on `localhost` as `admin` (`https://localhost:443` and
+  `https://localhost:8443` for instance 1). Those, and the container names and
+  compose project they are checked against, are derived from the instance id
+  by a fixed formula (`internal/labtest/instance.go`) — never read from the pair
+  file or the environment — and the pair file must match them exactly. Before
+  the first test it checks that docker shows each container running the lab
+  image and entrypoint, created by compose as that router's service in the
+  instance's project, and publishing that very port, and that a CHR guest
+  answers there. `MTHA_LAB_PASSWORD` overrides the password, like
+  provision.sh's `ROUTER_PASS`.
 - **Reset between tests:** once per test binary the harness runs provision.sh,
   checks the documented baseline, and saves a golden `/system/backup/save` on
   each router. Every writing test restores it from `t.Cleanup` — even when it
@@ -190,8 +294,11 @@ both routers and deliberately break their configuration, so:
   any file created since, since a backup does not cover files. A test that
   leaves a router unable to answer at all opts into recreating the containers
   instead (`labtest.RecreateOnCleanup()`, about 35s); a failed restore falls
-  back to that too. If a run is killed mid-test, the next one notices (a marker
-  file on each router) and restores the golden backup before starting.
+  back to that too. Either way only the instance under test is recreated.
+  If a run is killed mid-test, the next one notices (a marker file on each
+  router) and restores the golden backup before starting. A reset counts as
+  done only once both routers are at baseline in the same check, since after
+  a reboot router b can briefly win the election before a preempts it.
 - **Writing a lab test:** put it in a `*_lab_test.go` file starting with
   `//go:build lab`, name it `TestLab...`, and begin with `labtest.New(t)` (or
   `labtest.New(t, labtest.ReadOnly())` if it never writes). Drive the real

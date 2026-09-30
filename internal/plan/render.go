@@ -24,7 +24,7 @@ func (op Op) String() string {
 // Render is the dry-run text of the plan (project.md §5.4: "Dry run lists
 // every REST operation ... before anything is written"): the numbered ops
 // grouped by target router, each with its explanatory note, followed by any
-// skipped hunks. It is what the Apply screen shows and what the planner's
+// warnings and then any skipped hunks. It is what the Apply screen shows and what the planner's
 // golden tests pin.
 func (p Plan) Render() string {
 	var b strings.Builder
@@ -41,6 +41,13 @@ func (p Plan) Render() string {
 		fmt.Fprintf(&b, "%3d. %s\n", i+1, op)
 		if op.Note != "" {
 			fmt.Fprintf(&b, "       %s\n", op.Note)
+		}
+	}
+
+	if len(p.Warnings) > 0 {
+		b.WriteString("warnings:\n")
+		for _, w := range p.Warnings {
+			fmt.Fprintf(&b, "  %s\n", w)
 		}
 	}
 

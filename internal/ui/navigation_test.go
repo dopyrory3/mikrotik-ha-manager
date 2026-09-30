@@ -186,14 +186,14 @@ func TestApplyScrollAndReplan(t *testing.T) {
 	if m.apply.scroll != 1 {
 		t.Errorf("j scrolled to %d, want 1", m.apply.scroll)
 	}
-	for range renderPlanOps(m.apply) {
+	for range renderPlanOps(m.apply, m.width) {
 		m = drive(t, m, key("j"))
 	}
-	if last := len(renderPlanOps(m.apply)) - 1; m.apply.scroll != last {
+	if last := len(renderPlanOps(m.apply, m.width)) - 1; m.apply.scroll != last {
 		t.Errorf("j past the end scrolled to %d, want clamped at %d", m.apply.scroll, last)
 	}
 	m = drive(t, m, key("k"))
-	if last := len(renderPlanOps(m.apply)) - 1; m.apply.scroll != last-1 {
+	if last := len(renderPlanOps(m.apply, m.width)) - 1; m.apply.scroll != last-1 {
 		t.Errorf("k scrolled to %d, want %d", m.apply.scroll, last-1)
 	}
 

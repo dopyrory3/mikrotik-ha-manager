@@ -37,10 +37,15 @@ pairs:
         vrid: 2
         addresses: [203.0.113.1/29]
     sync:
+      # Sections apply in this order, so list a section before any that
+      # names its entries: address lists before the firewall rules matching
+      # them (else a new drop rule on a blocklist fails open until the list
+      # is written), DHCP servers before their leases, scripts before the
+      # schedulers that run them.
       sections:
+        - ip/firewall/address-list
         - ip/firewall/filter
         - ip/firewall/nat
-        - ip/firewall/address-list
         - ip/dhcp-server
         - ip/dhcp-server/network
         - ip/dhcp-server/lease   # static only
@@ -56,7 +61,7 @@ pairs:
         - ip/address             # per-router interface addresses
         - ip/service.certificate # each router's own self-signed cert
         - ip/service.port        # router b's REST API (www-ssl) is on 8443
-        - user.last-logged-in    # updates independently on every login
+        - user.last-logged-in    # per-router; set by binary-API logins, not by REST
         # runtime.toggles below enables these on the master and disables
         # them on the standby, so "disabled" differs by design:
         - ip/dhcp-server.disabled

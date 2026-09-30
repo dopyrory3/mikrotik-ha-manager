@@ -3,6 +3,7 @@ package plan
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // Writer is the subset of routeros.Client that Execute needs. It is an
@@ -32,6 +33,13 @@ func Execute(ctx context.Context, w Writer, op Op) error {
 	case MethodDelete:
 		err = w.Delete(ctx, op.Path)
 	case MethodCommand:
+		if strings.HasSuffix(op.Path, "/move") && (!isRuleID(op.Body["numbers"]) || !isRuleID(op.Body["destination"])) {
+			// RouterOS moves a rule to the end of the table for a missing
+			// or unknown destination, and reads a bare number as a
+			// position; Build never plans either, so refuse rather than
+			// reorder by accident.
+			return fmt.Errorf("router %s: refusing move %v: numbers and destination must both be .ids", op.Router, op.Body)
+		}
 		err = w.Command(ctx, op.Path, op.Body, nil)
 	default:
 		return fmt.Errorf("unknown method %q", op.Method)

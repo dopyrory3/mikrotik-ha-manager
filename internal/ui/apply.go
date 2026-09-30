@@ -9,8 +9,10 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"mtha/internal/diff"
+	"mtha/internal/model"
 	"mtha/internal/plan"
 	"mtha/internal/poll"
 	"mtha/internal/routeros"
@@ -282,6 +284,21 @@ func buildApplyPlan(ctx context.Context, clientA, clientB *routeros.Client, sect
 			return plan.Plan{}, err
 		}
 	}
+
+	// The reference check's extra reads (docs/design-questions.md §3):
+	// sections a planned body names that weren't fetched above, read-only
+	// and only when some body names them. A failed read isn't fatal: the
+	// plan then warns that the reference couldn't be checked.
+	opts.Referents = map[plan.Read][]model.Entry{}
+	for _, rd := range plan.ReferenceReads(inputs, opts) {
+		client := clientA
+		if rd.Router == "b" {
+			client = clientB
+		}
+		if entries, err := client.GetSection(ctx, rd.Section); err == nil {
+			opts.Referents[rd] = entries
+		}
+	}
 	return plan.Build(inputs, opts), nil
 }
 
@@ -404,7 +421,7 @@ func (m Model) handleApplyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "down", "j":
-		if m.apply.scroll < len(renderPlanOps(m.apply))-1 {
+		if m.apply.scroll < len(renderPlanOps(m.apply, m.width))-1 {
 			m.apply.scroll++
 		}
 		return m, nil
@@ -492,26 +509,30 @@ func renderApply(m Model) string {
 
 	a := m.apply
 	var header, body, footer []string
+	say := func(style lipgloss.Style, text string) {
+		header = append(header, wrapLines("", text, style.Render, m.width, 2)...)
+	}
 
 	switch a.stage {
 	case applyIdle:
 		switch {
 		case a.err != nil:
-			header = append(header, styleDown.Render("planning failed: "+a.err.Error()), styleMuted.Render("press r to retry"))
+			say(styleDown, "planning failed: "+a.err.Error())
+			say(styleMuted, "press r to retry")
 		case m.selectedCount() == 0:
-			header = append(header, styleMuted.Render("no hunks selected — on the Drift screen (2), select hunks with space, or a whole section with a (A→B) / b (B→A)"))
+			say(styleMuted, "no hunks selected — on the Drift screen (2), select hunks with space, or a whole section with a (A→B) / b (B→A)")
 		default:
-			header = append(header, styleMuted.Render("press r to build the plan"))
+			say(styleMuted, "press r to build the plan")
 		}
 	case applyPlanning:
-		header = append(header, styleMuted.Render("reading both routers and planning..."))
+		say(styleMuted, "reading both routers and planning...")
 	default:
 		header = append(header, planSummary(a.plan))
-		body = renderPlanOps(a)
+		body = renderPlanOps(a, m.width)
 		footer = applyFooter(m)
 	}
 	if a.notice != "" {
-		header = append(header, styleDegraded.Render(a.notice))
+		say(styleDegraded, a.notice)
 	}
 
 	for _, l := range header {
@@ -548,8 +569,9 @@ func planSummary(p plan.Plan) string {
 
 // renderPlanOps lists every op (project.md §5.4: the dry run lists every
 // REST operation), with a progress marker once a run has started, then any
-// skipped hunks.
-func renderPlanOps(a applyState) []string {
+// skipped hunks. Ops, notes and reasons wrap to width rather than run off
+// the screen; the screen scrolls the result.
+func renderPlanOps(a applyState, width int) []string {
 	var lines []string
 	current := ""
 	for i, op := range a.plan.Ops {
@@ -568,59 +590,87 @@ func renderPlanOps(a applyState) []string {
 				marker = styleDown.Render("✗ ")
 			}
 		}
-		lines = append(lines, fmt.Sprintf("%s%2d. %s", marker, i+1, op))
+		lines = append(lines, wrapLines(fmt.Sprintf("%s%2d. ", marker, i+1), op.String(), plain, width, opIndent)...)
 		if op.Note != "" {
-			lines = append(lines, styleMuted.Render("       "+op.Note))
+			lines = append(lines, wrapLines(strings.Repeat(" ", opIndent+1), op.Note, styleMuted.Render, width, opIndent+1)...)
+		}
+	}
+	if len(a.plan.Warnings) > 0 {
+		lines = append(lines, styleDegraded.Render("Warnings"))
+		for _, w := range a.plan.Warnings {
+			lines = append(lines, wrapLines("  ", w.String(), styleMuted.Render, width, 4)...)
 		}
 	}
 	if len(a.plan.Skipped) > 0 {
 		lines = append(lines, styleDegraded.Render("Skipped"))
 		for _, s := range a.plan.Skipped {
-			lines = append(lines, fmt.Sprintf("  %s: %s", s.Where(), styleMuted.Render(s.Reason)))
+			lines = append(lines, wrapPair("  ", s.Where()+":", s.Reason, styleMuted.Render, width, 4)...)
 		}
 	}
 	return lines
 }
 
+// opIndent is where a wrapped op continues: under the op after its
+// progress marker and number.
+const opIndent = 6
+
+// applyFooter is what the screen shows under the plan for its stage,
+// wrapped to the terminal's width.
 func applyFooter(m Model) []string {
+	var lines []string
+	for _, l := range applyFooterText(m) {
+		lines = append(lines, wrapLines("", l.text, l.style.Render, m.width, 2)...)
+	}
+	if m.apply.stage == applyDone {
+		lines = append(lines, renderApplyResult(m.apply, m.width)...)
+	}
+	return lines
+}
+
+// footerLine is one line of applyFooterText, before wrapping.
+type footerLine struct {
+	style lipgloss.Style
+	text  string
+}
+
+func applyFooterText(m Model) []footerLine {
 	a := m.apply
+	styleNone := lipgloss.NewStyle()
 	switch a.stage {
 	case applyReview:
 		if a.plan.Empty() {
-			return []string{styleMuted.Render("nothing to apply — press r to re-plan")}
+			return []footerLine{{styleMuted, "nothing to apply — press r to re-plan"}}
 		}
 		if !m.writeMode {
-			return []string{styleDown.Render("read-only — restart with -write to apply this plan")}
+			return []footerLine{{styleDown, "read-only — restart with -write to apply this plan"}}
 		}
-		lines := []string{"press y to apply, r to re-plan"}
+		lines := []footerLine{{styleNone, "press y to apply, r to re-plan"}}
 		if masters := masterTargets(m, a.plan.Targets()); len(masters) > 0 {
-			lines = append(lines, styleDegraded.Render(fmt.Sprintf("router %s is the current VRRP master (or its state is unknown): a second confirmation will be required", upperJoin(masters))))
+			lines = append(lines, footerLine{styleDegraded, fmt.Sprintf("router %s is the current VRRP master (or its state is unknown): a second confirmation will be required", upperJoin(masters))})
 		}
 		return lines
 	case applyConfirmMaster:
-		return []string{
-			styleDown.Render(fmt.Sprintf("‼ this plan writes to router %s, the current VRRP master (or VRRP state unknown).", upperJoin(masterTargets(m, a.plan.Targets())))),
-			styleDown.Render("  press Y (shift+y) to write to it anyway, n/esc to cancel"),
+		return []footerLine{
+			{styleDown, fmt.Sprintf("‼ this plan writes to router %s, the current VRRP master (or VRRP state unknown).", upperJoin(masterTargets(m, a.plan.Targets())))},
+			{styleDown, "  press Y (shift+y) to write to it anyway, n/esc to cancel"},
 		}
 	case applyRechecking:
-		return []string{styleMuted.Render("re-reading both routers to confirm the plan is still current...")}
+		return []footerLine{{styleMuted, "re-reading both routers to confirm the plan is still current..."}}
 	case applyRunning:
-		return []string{styleMuted.Render(fmt.Sprintf("applying %d/%d...", a.next+1, len(a.plan.Ops)))}
+		return []footerLine{{styleMuted, fmt.Sprintf("applying %d/%d...", a.next+1, len(a.plan.Ops))}}
 	case applyVerifying:
-		lines := []string{styleMuted.Render("verifying: re-running drift detection...")}
+		lines := []footerLine{{styleMuted, "verifying: re-running drift detection..."}}
 		if a.err != nil {
-			lines = append([]string{styleDown.Render("apply stopped: " + a.err.Error())}, lines...)
+			lines = append([]footerLine{{styleDown, "apply stopped: " + a.err.Error()}}, lines...)
 		}
 		return lines
-	case applyDone:
-		return renderApplyResult(a)
 	}
 	return nil
 }
 
 // renderApplyResult reports the run's outcome and the residual drift of the
-// sections it touched.
-func renderApplyResult(a applyState) []string {
+// sections it touched, wrapped to width.
+func renderApplyResult(a applyState, width int) []string {
 	var lines []string
 	done := 0
 	for _, s := range a.status {
@@ -629,16 +679,16 @@ func renderApplyResult(a applyState) []string {
 		}
 	}
 	if a.err != nil {
-		lines = append(lines, styleDown.Render(fmt.Sprintf("apply stopped after %d/%d op(s): %s", done, len(a.plan.Ops), a.err.Error())))
+		lines = append(lines, wrapLines("", fmt.Sprintf("apply stopped after %d/%d op(s): %s", done, len(a.plan.Ops), a.err.Error()), styleDown.Render, width, 2)...)
 	} else {
 		lines = append(lines, styleReady.Render(fmt.Sprintf("applied %d/%d op(s)", done, len(a.plan.Ops))))
 	}
 
 	if a.verifyErr != nil {
-		lines = append(lines, styleDown.Render("verify error: "+a.verifyErr.Error()))
+		lines = append(lines, wrapLines("", "verify error: "+a.verifyErr.Error(), styleDown.Render, width, 2)...)
 	}
 	if a.kind != applySync {
-		return append(lines, renderRuntimeVerify(a)...)
+		return append(lines, renderRuntimeVerify(a, width)...)
 	}
 	sections := a.plan.Sections()
 	sort.Strings(sections)
@@ -651,13 +701,16 @@ func renderApplyResult(a applyState) []string {
 		case sd.Clean():
 			lines = append(lines, fmt.Sprintf("  %-28s %s", section, styleReady.Render("clean")))
 		default:
-			residual += len(sd.Hunks)
-			ids := make([]string, 0, len(sd.Hunks))
+			residual += sd.Count()
+			ids := make([]string, 0, sd.Count())
 			for _, h := range sd.Hunks {
 				ids = append(ids, h.Identity)
 			}
-			lines = append(lines, fmt.Sprintf("  %-28s %s %s", section,
-				styleDegraded.Render(fmt.Sprintf("%d residual", len(sd.Hunks))), styleMuted.Render(strings.Join(ids, ", "))))
+			for _, o := range sd.Order {
+				ids = append(ids, plan.OrderRef(o).String())
+			}
+			prefix := fmt.Sprintf("  %-28s %s ", section, styleDegraded.Render(fmt.Sprintf("%d residual", sd.Count())))
+			lines = append(lines, wrapLines(prefix, strings.Join(ids, ", "), styleMuted.Render, width, 4)...)
 		}
 	}
 	if residual > 0 {
@@ -669,7 +722,7 @@ func renderApplyResult(a applyState) []string {
 // renderRuntimeVerify reports the re-verification after a Runtime deploy
 // or remove: every object ok, or every object gone (or left alone as not
 // mtha's), respectively.
-func renderRuntimeVerify(a applyState) []string {
+func renderRuntimeVerify(a applyState, width int) []string {
 	var left []string
 	for _, router := range []string{"a", "b"} {
 		for _, it := range a.runtimeStatus[router] {
@@ -690,7 +743,7 @@ func renderRuntimeVerify(a applyState) []string {
 	}
 	lines := []string{styleDegraded.Render(fmt.Sprintf("%d object(s) not as intended:", len(left)))}
 	for _, l := range left {
-		lines = append(lines, "  "+l)
+		lines = append(lines, wrapLines("  ", l, plain, width, 4)...)
 	}
 	return append(lines, styleMuted.Render("see the Runtime screen (3)"))
 }

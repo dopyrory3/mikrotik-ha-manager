@@ -115,37 +115,43 @@ func (m Model) handleDriftKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.driftFocusHunks = true
 			m.driftHunk = 0
 		}
-		return m, nil
 
 	case "esc":
 		m.driftFocusHunks = false
-		return m, nil
 
 	case "up", "k":
-		if m.driftFocusHunks {
-			if m.driftHunk > 0 {
-				m.driftHunk--
-			}
-		} else if m.driftSection > 0 {
+		switch {
+		case m.driftFocusHunks && m.driftHunk > 0:
+			m.driftHunk--
+		case !m.driftFocusHunks && m.driftSection > 0:
 			m.driftSection--
+		default:
+			// Already at the top of the list: scroll up to what is above.
+			m.driftScroll = max(m.driftScroll-1, 0)
+			return m, nil
 		}
-		return m, nil
 
 	case "down", "j":
-		if m.driftFocusHunks {
-			if hunks := m.currentHunks(); m.driftHunk < len(hunks)-1 {
-				m.driftHunk++
-			}
-		} else if m.driftSection < len(m.driftSections)-1 {
+		switch {
+		case m.driftFocusHunks && m.driftHunk < len(m.currentHunks())-1:
+			m.driftHunk++
+		case !m.driftFocusHunks && m.driftSection < len(m.driftSections)-1:
 			m.driftSection++
+		default:
+			// At the bottom of the list: scroll on to what the cursor
+			// doesn't reach, the order findings below the last hunk.
+			lines, _, _ := driftBody(m)
+			if h := m.driftBodyHeight(); len(lines) > h {
+				// h-1: driftWindow's last line is its scroll marker.
+				m.driftScroll = min(m.driftScroll+1, len(lines)-(h-1))
+			}
+			return m, nil
 		}
-		return m, nil
 
 	case " ":
 		if hunks := m.currentHunks(); m.driftFocusHunks && m.driftHunk < len(hunks) {
 			m.cycleHunkSelection(hunks[m.driftHunk])
 		}
-		return m, nil
 
 	case "a", "b":
 		dir := plan.AtoB
@@ -153,14 +159,16 @@ func (m Model) handleDriftKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			dir = plan.BtoA
 		}
 		m.selectSection(dir)
-		return m, nil
 
 	case "c":
 		if len(m.driftSections) > 0 {
 			delete(m.driftSelected, m.driftSections[m.driftSection])
 		}
+
+	default:
 		return m, nil
 	}
+	m.driftScroll = m.followDriftCursor()
 	return m, nil
 }
 
@@ -185,7 +193,9 @@ func (m *Model) cycleHunkSelection(h diff.Hunk) {
 	}
 }
 
-// selectSection selects every hunk in the current section in one direction.
+// selectSection selects every hunk in the current section in one
+// direction, and its chains' order findings, which the planner reports as
+// skipped until it can plan a move.
 func (m *Model) selectSection(dir plan.Direction) {
 	if len(m.driftSections) == 0 {
 		return
@@ -193,6 +203,9 @@ func (m *Model) selectSection(dir plan.Direction) {
 	section := m.driftSections[m.driftSection]
 	for _, h := range m.currentHunks() {
 		m.setSelection(section, plan.RefOf(h), dir)
+	}
+	for _, o := range m.driftData[section].Order {
+		m.setSelection(section, plan.OrderRef(o), dir)
 	}
 }
 
@@ -218,6 +231,9 @@ func (m *Model) pruneDriftSelection(data map[string]diff.SectionDiff) {
 		present := make(map[plan.HunkRef]bool, len(sd.Hunks))
 		for _, h := range sd.Hunks {
 			present[plan.RefOf(h)] = true
+		}
+		for _, o := range sd.Order {
+			present[plan.OrderRef(o)] = true
 		}
 		for ref := range refs {
 			if !present[ref] {
@@ -251,40 +267,107 @@ func renderDrift(m Model) string {
 	b.WriteString(styleTitle.Render(fmt.Sprintf("mtha — %s — drift", m.pair.Name)))
 	b.WriteString("\n\n")
 
-	switch {
-	case m.driftFetching:
-		b.WriteString(styleMuted.Render("fetching drift..."))
-	case m.driftData != nil:
-		if m.driftErr != nil {
-			b.WriteString(styleDown.Render("error: " + m.driftErr.Error()))
-			b.WriteString("\n\n")
-		}
-		b.WriteString(renderSectionList(m))
-		b.WriteString("\n\n")
-		b.WriteString(renderHunkList(m))
-	case m.driftErr != nil:
-		b.WriteString(styleDown.Render("error: " + m.driftErr.Error()))
-	default:
-		b.WriteString(styleMuted.Render("press r to fetch drift"))
-	}
+	lines, _, _ := driftBody(m)
+	b.WriteString(strings.Join(driftWindow(lines, m.driftScroll, m.driftBodyHeight()), "\n"))
 
 	b.WriteString("\n\n")
 	b.WriteString(styleStatusBar.Render(statusLine(m, fmt.Sprintf("%d selected", m.selectedCount()), "space/a/b: select, c: clear")))
 	return b.String()
 }
 
-func renderSectionList(m Model) string {
-	var b strings.Builder
-	b.WriteString(styleTitle.Render("Sections"))
-	b.WriteString("\n")
+// driftBody is everything the Drift screen draws between its title and its
+// status bar, wrapped to the terminal's width, and the lines [start, end)
+// the cursor's item takes up (a hunk with its expanded changes).
+func driftBody(m Model) (lines []string, start, end int) {
+	errLines := func() []string {
+		return wrapLines("", "error: "+m.driftErr.Error(), styleDown.Render, m.width, 2)
+	}
+	switch {
+	case m.driftFetching:
+		return []string{styleMuted.Render("fetching drift...")}, 0, 1
+	case m.driftData != nil:
+		if m.driftErr != nil {
+			lines = append(errLines(), "")
+		}
+		sections, cursor := renderSectionList(m)
+		if !m.driftFocusHunks {
+			start, end = len(lines)+cursor, len(lines)+cursor+1
+		}
+		lines = append(append(lines, sections...), "")
+		hunks, hs, he := renderHunkList(m)
+		if m.driftFocusHunks {
+			start, end = len(lines)+hs, len(lines)+he
+		}
+		return append(lines, hunks...), start, end
+	case m.driftErr != nil:
+		return errLines(), 0, 1
+	default:
+		return []string{styleMuted.Render("press r to fetch drift")}, 0, 1
+	}
+}
+
+// driftBodyHeight is how many lines of driftBody fit between the title
+// (and the blank under it) and the status bar (and the blank above it).
+func (m Model) driftBodyHeight() int {
+	if m.height <= 0 {
+		return 1 << 30 // no size yet: show everything
+	}
+	return max(m.height-4, 3)
+}
+
+// followDriftCursor is the scroll offset that brings the cursor's item into
+// view, moving the current one as little as it can.
+func (m Model) followDriftCursor() int {
+	lines, start, end := driftBody(m)
+	h := m.driftBodyHeight()
+	if len(lines) <= h {
+		return 0
+	}
+	h-- // driftWindow's last line is its scroll marker
+	off := m.driftScroll
+	if end > off+h {
+		off = end - h
+	}
+	if start < off {
+		off = start
+	}
+	return min(max(off, 0), len(lines)-h)
+}
+
+// driftWindow is the height lines of the body shown from offset (clamped),
+// the last of them a marker saying how much is above and below when it
+// doesn't all fit.
+func driftWindow(lines []string, offset, height int) []string {
+	if len(lines) <= height {
+		return lines
+	}
+	h := height - 1
+	offset = min(max(offset, 0), len(lines)-h)
+	window := append([]string{}, lines[offset:offset+h]...)
+	var more []string
+	if offset > 0 {
+		more = append(more, fmt.Sprintf("↑ %d line(s) above", offset))
+	}
+	if below := len(lines) - offset - h; below > 0 {
+		more = append(more, fmt.Sprintf("↓ %d below", below))
+	}
+	return append(window, styleMuted.Render("  … "+strings.Join(more, ", ")+" — j/k to scroll"))
+}
+
+// renderSectionList is the section list's lines and which of them the
+// section cursor is on.
+func renderSectionList(m Model) (lines []string, cursorLine int) {
+	lines = []string{styleTitle.Render("Sections")}
 
 	if len(m.driftSections) == 0 {
-		b.WriteString(styleMuted.Render("  (no sections configured)\n"))
-		return b.String()
+		return append(lines, styleMuted.Render("  (no sections configured)")), 1
 	}
 
 	for i, section := range m.driftSections {
 		sd, ok := m.driftData[section]
+		if i == m.driftSection {
+			cursorLine = len(lines)
+		}
 		cursor := cursorPrefix(i == m.driftSection && !m.driftFocusHunks)
 
 		var status string
@@ -292,57 +375,84 @@ func renderSectionList(m Model) string {
 		case !ok:
 			status = styleDown.Render("fetch failed")
 		case !sd.Clean():
-			status = styleDegraded.Render(fmt.Sprintf("%d hunk(s)", len(sd.Hunks)))
+			status = styleDegraded.Render(fmt.Sprintf("%d hunk(s)", sd.Count()))
 		default:
 			status = styleReady.Render("clean")
 		}
 		if n := len(m.driftSelected[section]); n > 0 {
 			status += styleAccent.Render(fmt.Sprintf(" (%d selected)", n))
 		}
-		fmt.Fprintf(&b, "%s%-30s %s\n", cursor, section, status)
+		lines = append(lines, fmt.Sprintf("%s%-30s %s", cursor, section, status))
 	}
-	return b.String()
+	return lines, cursorLine
 }
 
-func renderHunkList(m Model) string {
-	var b strings.Builder
+// hunkIndent is where a wrapped identity or order finding continues:
+// under the text after the cursor and selection marker.
+const hunkIndent = 8
+
+// renderHunkList is the current section's hunk list, identities wrapped to
+// the terminal's width, and the lines [start, end) of the hunk under the
+// cursor.
+func renderHunkList(m Model) (lines []string, start, end int) {
 	if len(m.driftSections) == 0 {
-		return ""
+		return nil, 0, 0
 	}
 
 	section := m.driftSections[m.driftSection]
 	sd, ok := m.driftData[section]
 
-	b.WriteString(styleTitle.Render("Hunks: " + section))
-	b.WriteString("\n")
+	lines = []string{styleTitle.Render("Hunks: " + section)}
 
 	if !ok {
-		b.WriteString(styleDown.Render("  fetch failed for this section; see error above\n"))
-		return b.String()
+		return append(lines, styleDown.Render("  fetch failed for this section; see error above")), 0, 1
 	}
 	if sd.Clean() {
-		b.WriteString(styleReady.Render("  no differences\n"))
-		return b.String()
+		return append(lines, styleReady.Render("  no differences")), 0, 1
 	}
 
+	start, end = 0, 1
 	for i, h := range sd.Hunks {
-		cursor := cursorPrefix(i == m.driftHunk && m.driftFocusHunks) + selectionMarker(m.driftSelected[section], h)
+		focused := i == m.driftHunk && m.driftFocusHunks
+		prefix := cursorPrefix(focused) + selectionMarker(m.driftSelected[section], h)
+		if focused {
+			start = len(lines)
+		}
 
 		switch {
 		case h.OnA && !h.OnB:
-			fmt.Fprintf(&b, "%s%s %s\n", cursor, styleDown.Render("- only on A"), h.Identity)
+			lines = append(lines, wrapLines(prefix+styleDown.Render("- only on A")+" ", h.Identity, plain, m.width, hunkIndent)...)
 		case !h.OnA && h.OnB:
-			fmt.Fprintf(&b, "%s%s %s\n", cursor, styleReady.Render("+ only on B"), h.Identity)
+			lines = append(lines, wrapLines(prefix+styleReady.Render("+ only on B")+" ", h.Identity, plain, m.width, hunkIndent)...)
 		default:
-			fmt.Fprintf(&b, "%s%s %s\n", cursor, styleDegraded.Render("~ changed"), h.Identity)
-			if i == m.driftHunk && m.driftFocusHunks {
+			lines = append(lines, wrapLines(prefix+styleDegraded.Render("~ changed")+" ", h.Identity, plain, m.width, hunkIndent)...)
+			if focused {
 				for _, c := range h.Changes {
-					fmt.Fprintf(&b, "      %s: %s -> %s\n", c.Field, styleMuted.Render(c.A), styleMuted.Render(c.B))
+					lines = append(lines, wrapLines("      "+c.Field+": ", c.A+" -> "+c.B, styleMuted.Render, m.width, hunkIndent+2)...)
 				}
 			}
 		}
+		if focused {
+			end = len(lines)
+		}
 	}
-	return b.String()
+	// Order findings (docs/design-questions.md §2) are listed after the
+	// hunks, one moved rule to a line. The cursor doesn't reach them (j/k
+	// past the last hunk scroll to them); a/b select them with the rest of
+	// the section, and the plan reports them as skipped.
+	for _, o := range sd.Order {
+		marker := "      "
+		if dir, ok := m.driftSelected[section][plan.OrderRef(o)]; ok {
+			marker = styleAccent.Render("["+dir.String()+"]") + " "
+		}
+		summary := fmt.Sprintf("chain %s: %d of %d rule(s) in a different order:", o.Chain, len(o.Moved), o.Rules)
+		lines = append(lines, wrapLines("  "+marker+styleDegraded.Render("↕ order")+" ", summary, plain, m.width, hunkIndent)...)
+		for _, r := range o.Moved {
+			name := plan.HunkRef{Identity: r.Identity, Occurrence: r.Occurrence}.String()
+			lines = append(lines, wrapLines(strings.Repeat(" ", hunkIndent+2), name, plain, m.width, hunkIndent+4)...)
+		}
+	}
+	return lines, start, end
 }
 
 // selectionMarker shows a hunk's selected sync direction, if any.

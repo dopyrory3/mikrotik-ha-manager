@@ -167,9 +167,11 @@ router they write to, each with a one-line explanation.
 
 - Each router's operations start with `POST /system/backup/save` (named
   `mtha-pre-apply-<timestamp>`), so there is a backup to restore from.
-- Then per section: `DELETE`s, `PATCH`es (plus `POST .../unset` for fields
-  the source router leaves at their default), and `PUT`s (RouterOS REST's
-  "add") in the source router's order.
+- Then per section: `DELETE`s, `PATCH`es, and `PUT`s (RouterOS REST's
+  "add") in the source router's order. A field the source router leaves at
+  its default is reset in the `PATCH`, as `""` (or `"false"` for a yes/no
+  field); a firewall rule's matcher is cleared with `POST .../unset`
+  instead, since RouterOS accepts only that there.
 - New firewall rules carry `place-before`, anchored to the next rule in the
   same chain that already exists on the target, so they land in the same
   position as on the source.
@@ -178,8 +180,8 @@ router they write to, each with a one-line explanation.
   passwords, so creating one would leave it passwordless), it would add
   or remove a built-in `ip/service` entry, or it could lock mtha out of the
   target router mid-apply. That last one covers changing the `port`,
-  `disabled` or `address` of the target's `www-ssl` service (mtha's REST
-  API), and removing the user mtha logs in to the target as (the router's
+  `disabled`, `address` or `certificate` of the target's `www-ssl` service
+  (mtha's REST API), and removing the user mtha logs in to the target as (the router's
   `user` in the pair file) or changing that user's `group` or `disabled`.
   Make such changes by hand.
 

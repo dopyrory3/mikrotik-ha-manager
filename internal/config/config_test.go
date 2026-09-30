@@ -125,3 +125,58 @@ func TestDefaultPath(t *testing.T) {
 		t.Errorf("DefaultPath with no HOME = %q, want an error", got)
 	}
 }
+
+// Load warns, without failing, when a synced referent is listed after a
+// section that names its entries (docs/design-questions.md §3, option D).
+func TestLoadWarnsAboutSectionOrder(t *testing.T) {
+	pair := func(sections ...string) string {
+		return "pairs:\n  - name: core\n    routers:\n      a: { host: 10.0.0.2 }\n      b: { host: 10.0.0.3 }\n    sync:\n      sections: [" + strings.Join(sections, ", ") + "]\n"
+	}
+	warn := func(referent, referrer string) string {
+		return `pair "core": sync section ` + referent + " is listed after " + referrer + ", which refers to it; list " + referent + " first so its entries exist before anything that names them is created"
+	}
+	tests := []struct {
+		name string
+		yaml string
+		want []string
+	}{
+		{"referents first", pair("ip/firewall/address-list", "ip/firewall/filter", "ip/dhcp-server", "ip/dhcp-server/lease", "system/script", "system/scheduler"), nil},
+		{"lease before server", pair("ip/dhcp-server/lease", "ip/dhcp-server"), []string{warn("ip/dhcp-server", "ip/dhcp-server/lease")}},
+		{"scheduler before script", pair("system/scheduler", "user", "system/script"), []string{warn("system/script", "system/scheduler")}},
+		{"filter and nat before address-list", pair("ip/firewall/filter", "ip/firewall/nat", "ip/firewall/address-list"), []string{
+			warn("ip/firewall/address-list", "ip/firewall/filter"),
+			warn("ip/firewall/address-list", "ip/firewall/nat"),
+		}},
+		{"referent not synced", pair("system/scheduler", "ip/dhcp-server/lease"), nil},
+		{"no sync sections", pair(), nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			file, err := Load(writeFile(t, tt.yaml))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if strings.Join(file.Warnings, "\n") != strings.Join(tt.want, "\n") {
+				t.Errorf("Warnings:\n%s\nwant:\n%s", strings.Join(file.Warnings, "\n"), strings.Join(tt.want, "\n"))
+			}
+		})
+	}
+}
+
+// testlab/pairs.yaml keeps ip/firewall/filter first on purpose (the smoke
+// test drives the Drift screen to it without moving the cursor), so it
+// loads with the one address-list warning and no other.
+func TestLabPairFileWarnsOnlyAboutAddressList(t *testing.T) {
+	file, err := Load(filepath.Join("..", "..", "testlab", "pairs.yaml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for _, w := range file.Warnings {
+		if !strings.Contains(w, "ip/firewall/address-list is listed after ip/firewall/") {
+			t.Errorf("unexpected warning: %s", w)
+		}
+	}
+	if len(file.Warnings) == 0 {
+		t.Error("expected the address-list order warning")
+	}
+}

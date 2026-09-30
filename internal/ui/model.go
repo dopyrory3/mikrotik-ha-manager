@@ -53,6 +53,10 @@ type Model struct {
 	driftSection    int
 	driftHunk       int
 	driftFocusHunks bool
+	// driftScroll is the first line of the Drift screen's body on screen
+	// (see driftBody). Moving the cursor scrolls it into view; j/k past
+	// either end of a list scroll on, to what the cursor doesn't reach.
+	driftScroll int
 	// driftSelected is the operator's hunk selection per section, with
 	// the sync direction chosen for each (see drift.go); the Apply screen
 	// plans from it.
@@ -160,6 +164,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.driftErr = msg.err
 		m.driftData = msg.data
 		m.pruneDriftSelection(msg.data)
+		m.driftScroll = m.followDriftCursor()
 		return m, nil
 
 	case runtimeVerifyMsg:
@@ -176,6 +181,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.driftScroll = m.followDriftCursor()
 		return m, nil
 
 	case tea.KeyMsg:

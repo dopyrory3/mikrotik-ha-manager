@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -94,6 +95,26 @@ func TestBuildPlanFullInstanceProducesExpectedOps(t *testing.T) {
 	}
 	if !strings.HasPrefix(aVRRP.Fields["on-master"], onMasterMarker("vrrp-lan")) {
 		t.Errorf("on-master = %q, want it to start with the marker", aVRRP.Fields["on-master"])
+	}
+}
+
+// RouterOS stamps a scheduler's start-date and start-time from its own clock
+// when a create leaves them out, so the two routers would disagree in a
+// synced section; the Op must pin both, identically for both routers.
+func TestBuildPlanSchedulerStartIsPinned(t *testing.T) {
+	plans, err := BuildPlan(&config.Pair{Runtime: testRuntimeConfig()})
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	a := findOp(t, plans["a"].Ops, "system/scheduler")
+	b := findOp(t, plans["b"].Ops, "system/scheduler")
+	for _, field := range []string{"start-date", "start-time"} {
+		if a.Fields[field] == "" || a.Fields[field] == "startup" {
+			t.Errorf("scheduler %s = %q, want a fixed value", field, a.Fields[field])
+		}
+	}
+	if !reflect.DeepEqual(a.Fields, b.Fields) {
+		t.Errorf("scheduler fields differ between routers: a %v, b %v", a.Fields, b.Fields)
 	}
 }
 
@@ -244,7 +265,7 @@ func TestBuildPlanNetwatchScriptsArePerRouter(t *testing.T) {
 
 	const (
 		managed = `[/interface/vrrp find where comment~"^mtha:vrrp:"]`
-		allUp   = `:if ([/tool/netwatch print count-only where comment~"^mtha:netwatch:" disabled=no status=down] = 0) do=`
+		allUp   = `:if ([/tool/netwatch print count-only where comment~"^mtha:netwatch:" status=down] = 0) do=`
 	)
 	wantUp := map[string]string{"a": "priority=200", "b": "priority=100"}
 	for _, router := range routers {
@@ -265,6 +286,11 @@ func TestBuildPlanNetwatchScriptsArePerRouter(t *testing.T) {
 			}
 			if !strings.Contains(up, allUp) {
 				t.Errorf("router %s %s up-script = %q, want it gated on every mtha netwatch being up", router, target, up)
+			}
+			// Issue #26: an enabled netwatch entry has no disabled property
+			// on RouterOS 7.23.7, so a disabled= term makes the count 0.
+			if strings.Contains(up, "disabled") {
+				t.Errorf("router %s %s up-script = %q, want its down-count not to filter on disabled", router, target, up)
 			}
 			if !strings.Contains(down, "priority=50}") || strings.Count(down, "priority=") != 1 {
 				t.Errorf("router %s %s down-script = %q, want priority_degraded (50)", router, target, down)

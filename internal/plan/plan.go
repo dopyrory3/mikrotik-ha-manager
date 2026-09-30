@@ -44,10 +44,20 @@ func (d Direction) Source() string {
 }
 
 // HunkRef identifies one hunk within a section across re-reads: its
-// identity plus its occurrence within that identity (see diff.Hunk).
+// identity plus its occurrence within that identity (see diff.Hunk). For a
+// chain's order finding (diff.OrderHunk) it carries only Chain instead, so
+// the two kinds can share one selection map and never collide.
 type HunkRef struct {
 	Identity   string
 	Occurrence int
+	// Chain is set, and nothing else, for an order finding: the firewall
+	// chain whose rules are in a different order on the two routers.
+	Chain string
+}
+
+// OrderRef returns the HunkRef for a chain's order finding.
+func OrderRef(o diff.OrderHunk) HunkRef {
+	return HunkRef{Chain: o.Chain}
 }
 
 // RefOf returns the HunkRef for a diff hunk.
@@ -56,6 +66,9 @@ func RefOf(h diff.Hunk) HunkRef {
 }
 
 func (r HunkRef) String() string {
+	if r.Chain != "" {
+		return fmt.Sprintf("rule order in chain %s", r.Chain)
+	}
 	if r.Occurrence == 0 {
 		return r.Identity
 	}
@@ -86,6 +99,11 @@ type Options struct {
 	// or disabled, since the rest of the apply (and the next session) could
 	// no longer connect.
 	Users map[string]string
+	// Referents are the extra read-only reads the reference check needs:
+	// the sections a planned body refers to that aren't among the inputs,
+	// on the router it writes to. ReferenceReads lists them. A read missing
+	// here is warned about as unchecked, never assumed present.
+	Referents map[Read][]model.Entry
 }
 
 // DefaultBackupName is used when Options.BackupName is empty.
@@ -146,6 +164,11 @@ func (s Skip) Where() string {
 type Plan struct {
 	Ops     []Op
 	Skipped []Skip
+	// Warnings are planned writes that may not do what the operator
+	// expects — so far, a body naming an object the target lacks (see
+	// references.go). Unlike a Skip, the op still runs: RouterOS may well
+	// accept it.
+	Warnings []Warning
 }
 
 // Empty reports whether the plan has nothing to write.
@@ -217,6 +240,7 @@ func Build(inputs []SectionInput, opts Options) Plan {
 		p.Ops = append(p.Ops, ops...)
 	}
 	p.Skipped = skipped
+	p.Warnings = checkReferences(p.Ops, inputs, opts.Referents)
 	return p
 }
 
@@ -301,6 +325,19 @@ func buildSection(in SectionInput, opts Options) ([]Op, []Skip) {
 			chosen = append(chosen, selected{hunk: h, dir: dir})
 		}
 	}
+	// Chains to reorder, in the section's order.
+	type chosenOrder struct {
+		o   diff.OrderHunk
+		dir Direction
+	}
+	var reorders []chosenOrder
+	for _, o := range sd.Order {
+		ref := OrderRef(o)
+		stillDiffers[ref] = true
+		if dir, ok := in.Choices[ref]; ok {
+			reorders = append(reorders, chosenOrder{o: o, dir: dir})
+		}
+	}
 
 	var skips []Skip
 	for _, ref := range sortedRefs(in.Choices) {
@@ -383,9 +420,29 @@ func buildSection(in SectionInput, opts Options) ([]Op, []Skip) {
 		}
 	}
 
+	// Moves come after deletes and updates, neither of which removes or
+	// re-IDs a rule a move names (a delete is of a rule on the target
+	// only; a PATCH keeps the ".id"), and before creates, so that each create's
+	// place-before anchor is already where the source has it
+	// (docs/design-questions.md §2). A chain whose moves can't be verified
+	// against the target is skipped whole: half a reorder is still wrong.
+	var moves []Op
+	for _, c := range reorders {
+		ops, reason := moveOps(in.Section, c.o, c.dir, sides[c.dir.Source()], sides[c.dir.Target()])
+		if reason != "" {
+			skips = append(skips, Skip{
+				Section: in.Section, Ref: OrderRef(c.o), Direction: c.dir,
+				Reason: fmt.Sprintf("%s out of order (%s); not moved: %s. Reorder this chain by hand", countRules(len(c.o.Moved), c.o.Rules), movedList(c.o.Moved), reason),
+			})
+			continue
+		}
+		moves = append(moves, ops...)
+	}
+
 	sort.SliceStable(creates, func(i, j int) bool { return creates[i].srcIndex < creates[j].srcIndex })
 
 	ops := append(deletes, updates...)
+	ops = append(ops, moves...)
 	for _, c := range creates {
 		ops = append(ops, c.op)
 	}
@@ -393,15 +450,17 @@ func buildSection(in SectionInput, opts Options) ([]Op, []Skip) {
 }
 
 // lockoutReason is why updating the target's entry with changes could cut
-// mtha off from that router mid-apply, or "" if it can't: moving, disabling
-// or narrowing the address list of the REST API service (www-ssl), or
-// changing the group or disabled flag of the user mtha logs in as.
+// mtha off from that router mid-apply, or "" if it can't: moving, disabling,
+// narrowing the address list of, or swapping the certificate on the REST API
+// service (www-ssl), or changing the group or disabled flag of the user mtha
+// logs in as. A certificate REST clients reject under verified TLS severs the
+// connection as surely as a port change (docs/lockout-guard-findings.md §5).
 func lockoutReason(section, target string, tgt row, changes []model.FieldChange, users map[string]string) string {
 	var guarded map[string]bool
 	var reason string
 	switch {
 	case section == "ip/service" && stringOf(tgt.raw["name"]) == "www-ssl":
-		guarded = map[string]bool{"port": true, "disabled": true, "address": true}
+		guarded = map[string]bool{"port": true, "disabled": true, "address": true, "certificate": true}
 		reason = fmt.Sprintf("changes %%s of router %s's REST API service; mtha could lose its connection mid-apply", target)
 	case section == "user" && isAPIUser(tgt, target, users):
 		guarded = map[string]bool{"group": true, "disabled": true}
@@ -427,18 +486,56 @@ func isAPIUser(tgt row, target string, users map[string]string) bool {
 	return name != "" && name == users[target]
 }
 
-// updateOps makes the target entry match the source: one PATCH setting every
-// field the source has a value for, then one unset per field the source
-// leaves at default (absent or empty), since PATCHing "" isn't valid for
-// every RouterOS property but unset is.
+// firewallTextFields are the properties of a firewall rule that are free
+// text rather than a matcher or an action parameter. They are reset like
+// any other section's fields, by PATCHing "", and the rule list's unset
+// command refuses them.
+var firewallTextFields = map[string]bool{
+	"comment":    true,
+	"log-prefix": true,
+}
+
+// resetValue says how to put field back to its default on the target, for a
+// field the source leaves there (absent or empty). No one mechanism works
+// for every RouterOS property (probed on 7.23.7, docs/lab-rest-contract.md):
+//
+//   - a yes/no property (disabled, log, block-access, ...) takes neither ""
+//     nor unset; it is PATCHed to "false". Only "true" differs from an
+//     absent field, so that is the only value it can be reset from.
+//   - a firewall rule's matchers and action parameters (src-address,
+//     in-interface, to-ports, ...) are cleared by the rule list's unset
+//     command; "" is not a value most of them parse. unset is false for
+//     these and the caller plans the command.
+//   - everything else (comment, log-prefix, a lease's address-lists, a
+//     script's or scheduler's fields, ...) is PATCHed to "". Sections other
+//     than the firewall rule lists either have no unset command at all
+//     (system/script) or one that refuses these fields.
+func resetValue(section, field string, tgt row) (value string, patch bool) {
+	switch {
+	case stringOf(tgt.norm[field]) == "true":
+		return "false", true
+	case model.IsFirewallSection(section) && !firewallTextFields[field]:
+		return "", false
+	default:
+		return "", true
+	}
+}
+
+// updateOps makes the target entry match the source: one PATCH carrying
+// every field the source has a value for and every field it leaves at
+// default that a PATCH can reset, then one unset per remaining default
+// field (see resetValue).
 func updateOps(section, target string, ref HunkRef, changes []model.FieldChange, src, tgt row, dir Direction) []Op {
 	id := idOf(tgt.raw)
 	set := map[string]string{}
-	var unset []string
+	var reset, unset []string
 	for _, ch := range changes {
 		v, present := src.norm[ch.Field]
 		if s := stringOf(v); present && s != "" {
 			set[ch.Field] = s
+		} else if value, patch := resetValue(section, ch.Field, tgt); patch {
+			set[ch.Field] = value
+			reset = append(reset, ch.Field)
 		} else {
 			unset = append(unset, ch.Field)
 		}
@@ -446,10 +543,16 @@ func updateOps(section, target string, ref HunkRef, changes []model.FieldChange,
 
 	var ops []Op
 	if len(set) > 0 {
+		note := fmt.Sprintf("update %s to match router %s", ref, dir.Source())
+		if len(reset) == len(set) {
+			note = fmt.Sprintf("reset %s on %s (default on router %s)", strings.Join(reset, ", "), ref, dir.Source())
+		} else if len(reset) > 0 {
+			note += fmt.Sprintf("; resets %s to default", strings.Join(reset, ", "))
+		}
 		ops = append(ops, Op{
 			Router: target, Method: MethodUpdate, Path: "/" + section + "/" + id, Body: set,
 			Section: section, Identity: ref.Identity,
-			Note: fmt.Sprintf("update %s to match router %s", ref, dir.Source()),
+			Note: note,
 		})
 	}
 	for _, field := range unset {
@@ -518,12 +621,27 @@ func stringOf(v any) string {
 	return fmt.Sprintf("%v", v)
 }
 
+func countRules(moved, of int) string {
+	return fmt.Sprintf("%d of %d rule(s)", moved, of)
+}
+
+func movedList(moved []diff.RuleRef) string {
+	names := make([]string, len(moved))
+	for i, r := range moved {
+		names[i] = HunkRef{Identity: r.Identity, Occurrence: r.Occurrence}.String()
+	}
+	return strings.Join(names, ", ")
+}
+
 func sortedRefs(m map[HunkRef]Direction) []HunkRef {
 	refs := make([]HunkRef, 0, len(m))
 	for r := range m {
 		refs = append(refs, r)
 	}
 	sort.Slice(refs, func(i, j int) bool {
+		if refs[i].Chain != refs[j].Chain {
+			return refs[i].Chain < refs[j].Chain
+		}
 		if refs[i].Identity != refs[j].Identity {
 			return refs[i].Identity < refs[j].Identity
 		}

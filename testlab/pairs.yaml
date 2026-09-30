@@ -4,9 +4,14 @@
 #   export MTHA_LAB_A_PASSWORD=London12 MTHA_LAB_B_PASSWORD=London12
 #   go run ./cmd/mtha -config testlab/pairs.yaml -pair lab
 #
+# These are lab instance 1's ports. For another instance, internal/labtest
+# and `testlab/lab.sh up <instance>` each write a copy with that instance's
+# ports; nothing else changes.
+#
 # internal/labtest refuses to run unless both routers here are exactly the
-# lab's endpoints (localhost:443 and localhost:8443, user admin), so this
-# file cannot be pointed at another router to run the suite against it.
+# instance's endpoints (localhost:443 and localhost:8443 for instance 1, user
+# admin), so this file cannot be pointed at another router to run the suite
+# against it.
 pairs:
   - name: lab
     routers:
@@ -21,11 +26,19 @@ pairs:
       # ip/firewall/filter first: the smoke test drives the drift screen
       # to it without moving the section cursor.
       sections:
+        # Every section provision.sh's fixture populates, so the whole read
+        # path runs against real entries; the pair is drift-free in each at
+        # baseline.
         - ip/firewall/filter
         - ip/firewall/nat
         - ip/firewall/address-list
+        - ip/dhcp-server
+        - ip/dhcp-server/network
+        - ip/dhcp-server/lease   # static only
         - ip/dns/static
+        - ip/route               # only routes commented "mtha:..."
         - ip/service
+        - user
         - system/script
         - system/scheduler
       exempt:

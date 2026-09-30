@@ -4,8 +4,12 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
+	"mtha/internal/config"
+	"mtha/internal/diff"
 	"mtha/internal/model"
 )
 
@@ -87,7 +91,7 @@ func TestBuildConsecutiveCreatesKeepOrder(t *testing.T) {
 	assertGolden(t, "consecutive_creates", p.Render())
 }
 
-// Deletes, updates (PATCH for set fields, unset for fields the source
+// Deletes, updates (PATCH for set fields, unset for a matcher the source
 // leaves at default) and creates in one section; plus a B→A choice in a
 // second section, so the plan writes to both routers, each group preceded by
 // its own backup.
@@ -192,16 +196,20 @@ func TestBuildSkipsUnsafeHunks(t *testing.T) {
 	assertGolden(t, "skips", p.Render())
 }
 
-// Narrowing who may reach the REST API, or disabling it, is refused like a
-// port change; a change to www-ssl's other fields is still planned.
+// Moving the REST API, narrowing who may reach it, disabling it or swapping
+// its certificate is refused, along with anything else in the same hunk; a
+// change to www-ssl's other fields is still planned.
 func TestBuildRefusesRESTServiceLockout(t *testing.T) {
 	cases := []struct {
 		name     string
 		b        model.Entry
 		wantSkip bool
 	}{
+		{"port", model.Entry{".id": "*1", "name": "www-ssl", "port": "8443"}, true},
 		{"address", model.Entry{".id": "*1", "name": "www-ssl", "address": "10.9.9.0/24"}, true},
 		{"disabled", model.Entry{".id": "*1", "name": "www-ssl", "disabled": "true"}, true},
+		{"certificate", model.Entry{".id": "*1", "name": "www-ssl", "certificate": "other-cert"}, true},
+		{"certificate with other field", model.Entry{".id": "*1", "name": "www-ssl", "certificate": "other-cert", "tls-version": "only-1.2"}, true},
 		{"other field", model.Entry{".id": "*1", "name": "www-ssl", "tls-version": "only-1.2"}, false},
 	}
 	for _, tc := range cases {
@@ -243,5 +251,440 @@ func TestBuildHonoursExempt(t *testing.T) {
 	}
 	if _, ok := p.Ops[1].Body["priority"]; ok {
 		t.Errorf("exempt field copied into create body: %v", p.Ops[1].Body)
+	}
+}
+
+func TestBuildNeverWritesVRRPRoleFlags(t *testing.T) {
+	a := []model.Entry{{".id": "*1", "name": "vrrp-lan", "interface": "ether2", "vrid": "1", "master": "true"}}
+	b := []model.Entry{}
+	p := Build([]SectionInput{{
+		Section: "interface/vrrp", A: a, B: b, Choices: choose(AtoB, "vrrp-lan"),
+	}}, Options{})
+	if len(p.Ops) != 2 {
+		t.Fatalf("expected backup + create, got:\n%s", p.Render())
+	}
+	for _, flag := range []string{"master", "backup"} {
+		if _, ok := p.Ops[1].Body[flag]; ok {
+			t.Errorf("role flag %q copied into create body: %v", flag, p.Ops[1].Body)
+		}
+	}
+}
+
+// A user whose comment differs between the routers is one changed hunk,
+// since users are identified by name, not by comment (docs/design-questions.md
+// question 1). Syncing it A→B patches the comment on B's user in place: it
+// must never delete the user, because the create that would follow is
+// skipped (REST can't read the password) and B would be left without it.
+func TestBuildUserCommentChangePatchesInPlace(t *testing.T) {
+	a := []model.Entry{{".id": "*1", "name": "ops", "group": "full", "comment": "on-call"}}
+	b := []model.Entry{{".id": "*7", "name": "ops", "group": "full", "comment": "ops team"}}
+
+	p := Build([]SectionInput{{
+		Section: "user", A: a, B: b,
+		Choices: choose(AtoB, "ops"),
+	}}, Options{BackupName: "bk", Users: map[string]string{"a": "admin", "b": "admin"}})
+
+	var writes []string
+	for _, op := range p.Ops {
+		switch op.Method {
+		case MethodDelete, MethodCreate:
+			t.Errorf("%s would drop or recreate the user: %s", op.Method, op)
+		case MethodUpdate:
+			writes = append(writes, op.Router+" "+op.String())
+		}
+	}
+	want := `b PATCH /user/*7 {"comment":"on-call"}`
+	if len(writes) != 1 || writes[0] != want {
+		t.Errorf("updates = %v, want [%s]", writes, want)
+	}
+	if len(p.Skipped) != 0 {
+		t.Errorf("skipped = %+v, want none", p.Skipped)
+	}
+}
+
+// The reference check (docs/design-questions.md §3): a body naming an
+// object the target lacks warns, unless an earlier op in the plan creates
+// it; the op itself is still planned.
+func TestBuildWarnsAboutMissingReferents(t *testing.T) {
+	server := func(id, name, pool string) model.Entry {
+		return model.Entry{".id": id, "name": name, "interface": "bridge", "address-pool": pool}
+	}
+	// A lease is identified by server|mac-address, so a lease whose server
+	// differs is a remove plus a create, never a changed field: the check
+	// sees its server in a create body. (The PATCH path is exercised by the
+	// user group case below.)
+	lease := func(id, mac, srv string) model.Entry {
+		return model.Entry{".id": id, "mac-address": mac, "address": "10.0.0.5", "server": srv}
+	}
+	pools := map[Read][]model.Entry{
+		{Router: "b", Section: "ip/pool"}:   {{".id": "*1", "name": "pool-lan"}},
+		{Router: "b", Section: "interface"}: {{".id": "*1", "name": "bridge"}},
+	}
+
+	cases := []struct {
+		name      string
+		inputs    []SectionInput
+		referents map[Read][]model.Entry
+		want      []string
+	}{
+		{
+			name: "lease naming a server the target lacks",
+			inputs: []SectionInput{
+				{Section: "ip/dhcp-server/lease", A: []model.Entry{lease("*1", "AA", "dhcp-guest")}, Choices: choose(AtoB, "dhcp-guest|AA")},
+			},
+			referents: map[Read][]model.Entry{{Router: "b", Section: "ip/dhcp-server"}: {server("*1", "dhcp-lan", "pool-lan")}},
+			want:      []string{`ip/dhcp-server/lease dhcp-guest|AA [router B]: server=dhcp-guest names ip/dhcp-server name "dhcp-guest", which router B does not have and this plan does not create first`},
+		},
+		{
+			name: "lease moved to a server the target lacks: remove plus create",
+			inputs: []SectionInput{{
+				Section: "ip/dhcp-server/lease",
+				A:       []model.Entry{lease("*1", "AA", "dhcp-guest")},
+				B:       []model.Entry{lease("*4", "AA", "dhcp-lan")},
+				Choices: choose(AtoB, "dhcp-guest|AA", "dhcp-lan|AA"),
+			}},
+			referents: map[Read][]model.Entry{{Router: "b", Section: "ip/dhcp-server"}: {server("*1", "dhcp-lan", "pool-lan")}},
+			want:      []string{`ip/dhcp-server/lease dhcp-guest|AA [router B]: server=dhcp-guest names ip/dhcp-server name "dhcp-guest", which router B does not have and this plan does not create first`},
+		},
+		{
+			name: "lease naming a server the target has",
+			inputs: []SectionInput{
+				{Section: "ip/dhcp-server", A: []model.Entry{server("*1", "dhcp-lan", "pool-lan")}, B: []model.Entry{server("*9", "dhcp-lan", "pool-lan")}},
+				{Section: "ip/dhcp-server/lease", A: []model.Entry{lease("*1", "AA", "dhcp-lan")}, Choices: choose(AtoB, "dhcp-lan|AA")},
+			},
+		},
+		{
+			name: "server created earlier in the plan",
+			inputs: []SectionInput{
+				{Section: "ip/dhcp-server", A: []model.Entry{server("*1", "dhcp-guest", "pool-lan")}, Choices: choose(AtoB, "dhcp-guest")},
+				{Section: "ip/dhcp-server/lease", A: []model.Entry{lease("*1", "AA", "dhcp-guest")}, Choices: choose(AtoB, "dhcp-guest|AA")},
+			},
+			referents: pools,
+		},
+		{
+			name: "server created later in the plan",
+			inputs: []SectionInput{
+				{Section: "ip/dhcp-server/lease", A: []model.Entry{lease("*1", "AA", "dhcp-guest")}, Choices: choose(AtoB, "dhcp-guest|AA")},
+				{Section: "ip/dhcp-server", A: []model.Entry{server("*1", "dhcp-guest", "pool-lan")}, Choices: choose(AtoB, "dhcp-guest")},
+			},
+			referents: pools,
+			want:      []string{`ip/dhcp-server/lease dhcp-guest|AA [router B]: server=dhcp-guest names ip/dhcp-server name "dhcp-guest", which this plan only creates later (op 3)`},
+		},
+		{
+			name: "half-selection: the server's create is not selected",
+			inputs: []SectionInput{
+				{Section: "ip/dhcp-server", A: []model.Entry{server("*1", "dhcp-guest", "pool-lan")}},
+				{Section: "ip/dhcp-server/lease", A: []model.Entry{lease("*1", "AA", "dhcp-guest")}, Choices: choose(AtoB, "dhcp-guest|AA")},
+			},
+			want: []string{`ip/dhcp-server/lease dhcp-guest|AA [router B]: server=dhcp-guest names ip/dhcp-server name "dhcp-guest", which router B does not have and this plan does not create first`},
+		},
+		{
+			name: "server removed earlier in the plan",
+			inputs: []SectionInput{
+				{Section: "ip/dhcp-server", B: []model.Entry{server("*9", "dhcp-old", "pool-lan")}, Choices: choose(AtoB, "dhcp-old")},
+				{Section: "ip/dhcp-server/lease", A: []model.Entry{lease("*1", "AA", "dhcp-old")}, Choices: choose(AtoB, "dhcp-old|AA")},
+			},
+			want: []string{`ip/dhcp-server/lease dhcp-old|AA [router B]: server=dhcp-old names ip/dhcp-server name "dhcp-old", which this plan removes first`},
+		},
+		{
+			name: "lease server all names nothing",
+			inputs: []SectionInput{
+				{Section: "ip/dhcp-server/lease", A: []model.Entry{lease("*1", "AA", "all")}, Choices: choose(AtoB, "all|AA")},
+			},
+		},
+		{
+			name: "server naming an unsynced pool the target lacks",
+			inputs: []SectionInput{
+				{Section: "ip/dhcp-server", A: []model.Entry{server("*1", "dhcp-guest", "pool-guest")}, Choices: choose(AtoB, "dhcp-guest")},
+			},
+			referents: pools,
+			want:      []string{`ip/dhcp-server dhcp-guest [router B]: address-pool=pool-guest names ip/pool name "pool-guest", which router B does not have and this plan does not create first`},
+		},
+		{
+			name: "unsynced referent not read",
+			inputs: []SectionInput{
+				{Section: "ip/dhcp-server", A: []model.Entry{server("*1", "dhcp-guest", "pool-lan")}, Choices: choose(AtoB, "dhcp-guest")},
+			},
+			want: []string{
+				`ip/dhcp-server dhcp-guest [router B]: address-pool=pool-lan names ip/pool name "pool-lan", which was not read, so it could not be checked`,
+				`ip/dhcp-server dhcp-guest [router B]: interface=bridge names interface name "bridge", which was not read, so it could not be checked`,
+			},
+		},
+		{
+			name: "PATCH setting a user group the target lacks",
+			inputs: []SectionInput{{
+				Section: "user",
+				A:       []model.Entry{{".id": "*1", "name": "ops", "group": "noc"}},
+				B:       []model.Entry{{".id": "*7", "name": "ops", "group": "read"}},
+				Choices: choose(AtoB, "ops"),
+			}},
+			referents: map[Read][]model.Entry{{Router: "b", Section: "user/group"}: {{"name": "read"}, {"name": "full"}}},
+			want:      []string{`user ops [router B]: group=noc names user/group name "noc", which router B does not have and this plan does not create first`},
+		},
+		{
+			name: "firewall rule naming an empty address list, negated",
+			inputs: []SectionInput{
+				{Section: "ip/firewall/filter", A: []model.Entry{{".id": "*1", "chain": "input", "action": "drop", "src-address-list": "!trusted", "comment": "drop-untrusted"}}, Choices: choose(AtoB, "drop-untrusted")},
+				{Section: "ip/firewall/address-list", A: []model.Entry{{".id": "*1", "list": "trusted", "address": "10.0.0.9"}}},
+			},
+			want: []string{`ip/firewall/filter drop-untrusted [router B]: src-address-list=trusted names ip/firewall/address-list list "trusted", which router B does not have and this plan does not create first`},
+		},
+		{
+			name: "address list filled earlier in the plan",
+			inputs: []SectionInput{
+				{Section: "ip/firewall/address-list", A: []model.Entry{{".id": "*1", "list": "blocklist", "address": "198.51.100.7"}}, Choices: choose(AtoB, "blocklist|198.51.100.7")},
+				{Section: "ip/firewall/filter", A: []model.Entry{{".id": "*1", "chain": "input", "action": "drop", "src-address-list": "blocklist", "comment": "drop-blocked"}}, Choices: choose(AtoB, "drop-blocked")},
+			},
+		},
+		{
+			name: "dynamic address-list entries count",
+			inputs: []SectionInput{
+				{Section: "ip/firewall/filter", A: []model.Entry{{".id": "*1", "chain": "input", "action": "drop", "src-address-list": "scanners", "comment": "drop-scanners"}}, Choices: choose(AtoB, "drop-scanners")},
+				{Section: "ip/firewall/address-list", B: []model.Entry{{".id": "*5", "list": "scanners", "address": "203.0.113.4", "dynamic": "true"}}},
+			},
+		},
+		{
+			name: "scheduler naming a script, and one with inline source",
+			inputs: []SectionInput{
+				{Section: "system/scheduler", A: []model.Entry{
+					{".id": "*1", "name": "nightly", "on-event": "backup-job"},
+					{".id": "*2", "name": "inline", "on-event": "/system backup save name=x"},
+				}, Choices: choose(AtoB, "nightly", "inline")},
+				{Section: "system/script", B: []model.Entry{{".id": "*3", "name": "other"}}},
+			},
+			want: []string{`system/scheduler nightly [router B]: on-event=backup-job names system/script name "backup-job", which router B does not have and this plan does not create first`},
+		},
+		{
+			name: "route via an interface gateway and a table",
+			inputs: []SectionInput{
+				{Section: "ip/route", A: []model.Entry{
+					{".id": "*1", "dst-address": "0.0.0.0/0", "gateway": "10.0.0.1%wan2", "routing-table": "isp2", "comment": "mtha:isp2"},
+					{".id": "*2", "dst-address": "10.9.0.0/16", "gateway": "10.0.0.254", "comment": "mtha:lan"},
+				}, Choices: choose(AtoB, "mtha:isp2", "mtha:lan")},
+			},
+			referents: map[Read][]model.Entry{
+				{Router: "b", Section: "interface"}:     {{"name": "wan1"}},
+				{Router: "b", Section: "routing/table"}: {{"name": "main"}},
+			},
+			want: []string{
+				`ip/route mtha:isp2 [router B]: gateway=wan2 names interface name "wan2", which router B does not have and this plan does not create first`,
+				`ip/route mtha:isp2 [router B]: routing-table=isp2 names routing/table name "isp2", which router B does not have and this plan does not create first`,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := Build(tc.inputs, Options{Referents: tc.referents})
+			var got []string
+			for _, w := range p.Warnings {
+				got = append(got, w.String())
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("warnings:\n%s\nwant:\n%s\nplan:\n%s", strings.Join(got, "\n"), strings.Join(tc.want, "\n"), p.Render())
+			}
+			if p.Empty() || len(p.Skipped) > 0 {
+				t.Errorf("a warning must not stop the op being planned:\n%s", p.Render())
+			}
+		})
+	}
+}
+
+// ReferenceReads asks for exactly the referent sections a planned body
+// names that the inputs don't carry, on the router written to, and none
+// when no body refers to anything.
+func TestReferenceReads(t *testing.T) {
+	cases := []struct {
+		name   string
+		inputs []SectionInput
+		want   []Read
+	}{
+		{
+			name: "no reference fields",
+			inputs: []SectionInput{
+				{Section: "ip/dns/static", A: []model.Entry{{".id": "*1", "name": "nas", "address": "10.0.0.5"}}, Choices: choose(AtoB, "nas|A|10.0.0.5")},
+			},
+		},
+		{
+			name: "referent among the inputs needs no read",
+			inputs: []SectionInput{
+				{Section: "system/script", A: []model.Entry{{".id": "*1", "name": "job"}}},
+				{Section: "system/scheduler", B: []model.Entry{{".id": "*1", "name": "nightly", "on-event": "job"}}, Choices: choose(BtoA, "nightly")},
+			},
+		},
+		{
+			name: "unsynced and unselected referents, on the target",
+			inputs: []SectionInput{
+				{Section: "ip/dhcp-server", B: []model.Entry{{".id": "*1", "name": "dhcp-guest", "interface": "bridge", "address-pool": "pool-guest"}}, Choices: choose(BtoA, "dhcp-guest")},
+				{Section: "ip/dhcp-server/lease", B: []model.Entry{{".id": "*1", "mac-address": "AA", "server": "dhcp-guest"}}, Choices: choose(BtoA, "dhcp-guest|AA")},
+				{Section: "user", A: []model.Entry{{".id": "*1", "name": "ops", "group": "read"}}, B: []model.Entry{{".id": "*1", "name": "ops", "group": "noc"}}, Choices: choose(BtoA, "ops")},
+			},
+			want: []Read{{Router: "a", Section: "ip/pool"}, {Router: "a", Section: "interface"}, {Router: "a", Section: "user/group"}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ReferenceReads(tc.inputs, Options{}); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("ReferenceReads = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestReferenceNames(t *testing.T) {
+	cases := []struct {
+		fn   func(string) []string
+		in   string
+		want []string
+	}{
+		{gatewayInterfaces, "10.0.0.1", nil},
+		{gatewayInterfaces, "ether2", []string{"ether2"}},
+		{gatewayInterfaces, "fe80::1%ether1", []string{"ether1"}},
+		{gatewayInterfaces, "10.0.0.1@main", nil},
+		{gatewayInterfaces, "10.0.0.1,pppoe-out1", []string{"pppoe-out1"}},
+		{scriptName, "backup-job", []string{"backup-job"}},
+		{scriptName, ":log info x", nil},
+		{scriptName, "/system script run x", nil},
+		{negatable, "!trusted", []string{"trusted"}},
+	}
+	for _, tc := range cases {
+		if got := tc.fn(tc.in); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("names(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// config's section-order check (docs/design-questions.md §3, option D) is
+// the synced half of the reference table here: every reference between two
+// sections the sample syncs must be in it, and nothing else.
+func TestConfigSectionReferentsMatchReferences(t *testing.T) {
+	file, err := config.Load(writeSample(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	synced := map[string]bool{}
+	for _, s := range file.Pairs[0].Sync.Sections {
+		synced[s] = true
+	}
+	for _, s := range []string{"ip/firewall/mangle", "ip/firewall/raw"} {
+		synced[s] = true // not in the sample, but syncable firewall lists
+	}
+
+	want := map[string]map[string]bool{}
+	for _, r := range references {
+		if synced[r.section] && synced[r.referent] {
+			if want[r.section] == nil {
+				want[r.section] = map[string]bool{}
+			}
+			want[r.section][r.referent] = true
+		}
+	}
+	for section := range synced {
+		got := map[string]bool{}
+		for _, ref := range config.SectionReferents(section) {
+			got[ref] = true
+		}
+		if len(got) == 0 && len(want[section]) == 0 {
+			continue
+		}
+		if !reflect.DeepEqual(got, want[section]) {
+			t.Errorf("config.SectionReferents(%q) = %v, reference table says %v", section, got, want[section])
+		}
+	}
+}
+
+func writeSample(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "pairs.yaml")
+	if err := config.WriteSample(path); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// A field the source leaves at its default is reset with what RouterOS
+// accepts for it (issue #25): "" in a PATCH for free text and for every
+// section but the firewall rule lists, "false" in a PATCH for a yes/no
+// field, and the unset command only for a firewall rule's matchers.
+func TestBuildResetToDefault(t *testing.T) {
+	type op struct {
+		method Method
+		path   string
+		body   map[string]string
+	}
+	cases := []struct {
+		name, section string
+		a, b          model.Entry
+		id            string
+		want          []op
+	}{
+		{
+			"firewall matcher is unset", "ip/firewall/filter",
+			model.Entry{".id": "*1", "chain": "input", "comment": "r", "action": "accept"},
+			model.Entry{".id": "*11", "chain": "input", "comment": "r", "action": "accept", "src-address": "10.0.0.0/8"},
+			"r",
+			[]op{{MethodCommand, "/ip/firewall/filter/unset", map[string]string{"numbers": "*11", "value-name": "src-address"}}},
+		},
+		{
+			"firewall log-prefix is patched empty", "ip/firewall/filter",
+			model.Entry{".id": "*1", "chain": "input", "comment": "r", "action": "accept"},
+			model.Entry{".id": "*11", "chain": "input", "comment": "r", "action": "accept", "log-prefix": "x"},
+			"r",
+			[]op{{MethodUpdate, "/ip/firewall/filter/*11", map[string]string{"log-prefix": ""}}},
+		},
+		{
+			"firewall yes/no fields are patched false", "ip/firewall/nat",
+			model.Entry{".id": "*1", "chain": "srcnat", "comment": "r", "action": "masquerade"},
+			model.Entry{".id": "*11", "chain": "srcnat", "comment": "r", "action": "masquerade", "disabled": "true", "log": "true"},
+			"r",
+			[]op{{MethodUpdate, "/ip/firewall/nat/*11", map[string]string{"disabled": "false", "log": "false"}}},
+		},
+		{
+			"set, reset and unset together: one PATCH, then the unset", "ip/firewall/filter",
+			model.Entry{".id": "*1", "chain": "input", "comment": "r", "action": "accept"},
+			model.Entry{".id": "*11", "chain": "input", "comment": "r", "action": "drop", "log-prefix": "x", "in-interface": "ether1"},
+			"r",
+			[]op{
+				{MethodUpdate, "/ip/firewall/filter/*11", map[string]string{"action": "accept", "log-prefix": ""}},
+				{MethodCommand, "/ip/firewall/filter/unset", map[string]string{"numbers": "*11", "value-name": "in-interface"}},
+			},
+		},
+		{
+			"lease address-lists is patched empty", "ip/dhcp-server/lease",
+			model.Entry{".id": "*1", "address": "192.168.88.50", "mac-address": "02:00:00:00:AA:01", "address-lists": ""},
+			model.Entry{".id": "*21", "address": "192.168.88.50", "mac-address": "02:00:00:00:AA:01", "address-lists": "x"},
+			"",
+			[]op{{MethodUpdate, "/ip/dhcp-server/lease/*21", map[string]string{"address-lists": ""}}},
+		},
+		{
+			"script comment is patched empty", "system/script",
+			model.Entry{".id": "*1", "name": "hello", "source": ":log info hi"},
+			model.Entry{".id": "*31", "name": "hello", "source": ":log info hi", "comment": "c"},
+			"hello",
+			[]op{{MethodUpdate, "/system/script/*31", map[string]string{"comment": ""}}},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a, b := []model.Entry{c.a}, []model.Entry{c.b}
+			choices := choose(AtoB, c.id)
+			if c.id == "" {
+				// Take the identity the model gives the entry.
+				choices = map[HunkRef]Direction{}
+				for _, h := range diff.Compare(c.section, a, b, nil).Hunks {
+					choices[RefOf(h)] = AtoB
+				}
+			}
+			p := Build([]SectionInput{{Section: c.section, A: a, B: b, Choices: choices}}, Options{BackupName: "bk"})
+			got := p.Ops[1:] // after the backup
+			if len(got) != len(c.want) {
+				t.Fatalf("got %d op(s), want %d:\n%s", len(got), len(c.want), p.Render())
+			}
+			for i, w := range c.want {
+				g := got[i]
+				if g.Method != w.method || g.Path != w.path || !reflect.DeepEqual(g.Body, w.body) {
+					t.Errorf("op %d = %s %s %v, want %s %s %v", i+1, g.Method, g.Path, g.Body, w.method, w.path, w.body)
+				}
+			}
+		})
 	}
 }

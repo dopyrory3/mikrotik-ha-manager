@@ -51,7 +51,7 @@ pairs:
         - ip/address             # per-router interface addresses
         - ip/service.certificate # each router's own self-signed cert
         - ip/service.port        # router b's REST API (www-ssl) is on 8443
-        - user.last-logged-in    # updates independently on every login
+        - user.last-logged-in    # per-router; set by binary-API logins, not by REST
         - ip/dhcp-server.disabled
         - ip/route.disabled
     runtime:
@@ -152,19 +152,21 @@ An `exempt` entry takes one of two forms:
 | Form | Effect |
 | --- | --- |
 | `system/identity` | The **whole section** is skipped — it is not fetched and not diffed |
-| `interface/vrrp.priority` | That **single field** is stripped from every entry of `interface/vrrp` before comparison |
+| `interface/vrrp.priority` | That **single field** is stripped from every entry of `interface/vrrp` before comparison. RouterOS-reported `master`/`backup` role flags and `mac-address` are also stripped automatically as read-only state. |
 
 Both forms may be mixed in the same list, and a section may be exempt while
 still being relevant elsewhere (VRRP priority differs by design between
 master and backup, so it must be exempted from drift even though VRRP state
-is central to readiness).
+is central to readiness). `master`, `backup` and `mac-address` are always
+normalised away and do not need pair-file exemptions.
 
 Two field exemptions are worth adding to almost every pair, since they are
 per-router state rather than config and will otherwise show up as permanent,
 unresolvable drift: `ip/service.certificate` (each router holds its own
 self-signed certificate for `www-ssl` unless you've deliberately installed a
-shared one) and `user.last-logged-in` (updates independently every time
-either router is logged into). If you sync `ip/service` and one router's
+shared one) and `user.last-logged-in` (each router records its own; REST
+requests, mtha's polling included, do not move it, but a binary-API login
+does, so the two values differ — see `docs/lab-rest-contract.md`, `user`). If you sync `ip/service` and one router's
 REST API is on a non-standard `port`, also exempt `ip/service.port`, as the
 sample does: Apply refuses to change the target's `www-ssl` port, disabled
 flag or address list (it would cut mtha off mid-apply), so that drift could
@@ -272,12 +274,19 @@ One environment variable per router:
 MTHA_<PAIR>_<ROUTER>_PASSWORD
 ```
 
-`<PAIR>` and `<ROUTER>` are upper-cased. For pair `core`, router `a`:
+`<PAIR>` and `<ROUTER>` are upper-cased, with `-` mapped to `_`. For pair
+`core`, router `a`:
 
 ```sh
 export MTHA_CORE_A_PASSWORD=...
 export MTHA_CORE_B_PASSWORD=...
 ```
+
+A pair named `dc-edge` reads `MTHA_DC_EDGE_A_PASSWORD` and
+`MTHA_DC_EDGE_B_PASSWORD`, because a shell cannot export a name containing a
+hyphen. Only the variable name changes: the pair is still `dc-edge` in the
+pair file, on the command line, and in the UI. Other characters are not
+mapped, so keep pair names to letters, digits, `-` and `_`.
 
 The environment is the only source: there is no credential field in the pair
 file, and no keychain integration yet. If the variable is unset or empty,
